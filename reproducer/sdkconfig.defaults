@@ -1,0 +1,12 @@
+CONFIG_IDF_TARGET="esp32c6"
+# Keep this minimal and close to the failing configuration.
+CONFIG_ESP_TASK_WDT_INIT=n
+CONFIG_PM_ENABLE=n
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+# Print a panic backtrace instead of breaking into an attached debugger.
+# With OCDAWARE on, a fault sets a breakpoint and returns -- which wedges the
+# chip silently when openocd is not attached, and hides the backtrace when it is.
+CONFIG_ESP_DEBUG_OCDAWARE=n
+CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
