@@ -13,7 +13,21 @@ conditions established there:
 - Neither alone reproduces (55.7 h Wi-Fi-off: zero events; non-I2C nodes:
   zero events over weeks).
 - Events occur while the I2C bus is idle, not during transfers.
-- Observed rate with both active: ~1 event per 7 h (2.8–12.5 h to first).
+- Observed rate with both active: ~1 event per 7 h (2.8–12.5 h to first);
+  a second board has gapped as long as ~76 h once.
+
+**If you are trying to replicate:** a quiet hour means nothing. At the
+observed rates, ~48 h of silence is where a negative becomes meaningful
+(~1–2 % chance if your board were failing at ours' rate), and 72 h+ is a
+solid negative worth reporting either way — a board that does NOT reproduce
+is as useful to the investigation as one that does.
+
+**The default build panics on an event** (`REPRO_MODEM_SLEEP=1` exercises
+the Wi-Fi PHY hang), so a live console can scroll the evidence away in the
+reboot. Nothing is lost: every event persists to NVS and the next boot
+banner prints `boot #N | lifetime backsteps M` plus the last event's phase
+and magnitude. Check that line — or build with `-DREPRO_MODEM_SLEEP=0` to
+freeze-and-observe instead of crashing.
 
 ## Build
 
