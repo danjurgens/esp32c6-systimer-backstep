@@ -9,6 +9,26 @@ was used. Requires Wi-Fi association plus an in-use I2C master; with Wi-Fi
 modem sleep enabled it escalates to an Interrupt WDT panic in the Wi-Fi PHY
 path.
 
+## Is this your bug? (symptoms)
+
+If any of these sound familiar, you are probably here for the right reason:
+
+- **ESPHome/Home Assistant uptime stops incrementing** for 15 minutes to
+  hours, then resumes counting from where it stopped — never catching up
+- Device stays **online and connected** the whole time: API up, ping works,
+  all entities still "available" — but every sensor value is **frozen**
+- Timers, `interval:`, filters, and automations on the device stop firing,
+  then all resume at once
+- Recovers by itself after roughly 15/30/70/140 minutes (the duration is the
+  size of the clock jump — often close to a power of two)
+- On bare ESP-IDF: `esp_timer_get_time()` went backward /
+  `Interrupt wdt timeout on CPU0` panic with a backtrace through
+  `pp_timer_sleep_delay` → `esp_phy_disable` → `temp_sensor_get_raw_value`
+- A task watchdog / `loop_watchdog` shows the FreeRTOS tick and `esp_timer`
+  disagreeing by minutes
+- Happens only on nodes that use **I2C** (any sensor, any driver) with Wi-Fi
+  connected; your non-I2C C6 nodes are fine
+
 Full evidence: [REPORT.md](REPORT.md).
 Reported upstream: [espressif/esp-idf#19036](https://github.com/espressif/esp-idf/issues/19036).
 
