@@ -10,6 +10,7 @@ modem sleep enabled it escalates to an Interrupt WDT panic in the Wi-Fi PHY
 path.
 
 Full evidence: [REPORT.md](REPORT.md).
+Reported upstream: [espressif/esp-idf#19036](https://github.com/espressif/esp-idf/issues/19036).
 
 | directory | what it is |
 |---|---|

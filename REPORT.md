@@ -1,7 +1,8 @@
 # ESP32-C6 rev v0.2: SYSTIMER UNIT0 spontaneously clears counter bits
 
-**Status:** draft for review. Not yet submitted.
-**Suggested venue:** github.com/espressif/esp-idf issues, label `chip:esp32c6`.
+**Status:** submitted as
+[espressif/esp-idf#19036](https://github.com/espressif/esp-idf/issues/19036)
+(2026-08-31).
 
 ---
 
