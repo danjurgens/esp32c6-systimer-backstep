@@ -64,6 +64,7 @@ compare the two values bitwise to see which.
 | `REPRO_INTERNAL_PULLUP` | 0 | 1 = internal ~45k pull-ups only |
 | `REPRO_BURST` / `REPRO_IDLE_MS` | 3 / 1000 | duty pattern |
 | `REPRO_IDLE_CHUNK_MS` | 50 | esp_timer sampling granularity across idle |
+| `REPRO_MODEM_SLEEP` | 1 | 1 = `WIFI_PS_MIN_MODEM` (demonstrates the IWDT panic); 0 = `WIFI_PS_NONE` (observation mode: events freeze instead of crashing, device stays up, recovery observable) |
 
 `CONFIG_ESP_DEBUG_OCDAWARE=n` is set in sdkconfig.defaults so a panic prints
 its backtrace and reboots instead of halting for a debugger.

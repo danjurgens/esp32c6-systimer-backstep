@@ -53,6 +53,16 @@
 #ifndef REPRO_WIFI
 #define REPRO_WIFI 1
 #endif
+/* Modem sleep selects the CONSEQUENCE, not the fault: with WIFI_PS_MIN_MODEM
+ * a backstep corrupts pp_timer_sleep_delay's math and the PHY path hangs ->
+ * IWDT panic (demonstrates the worst case, but the reboot costs observation
+ * time and can outrun the samplers). With WIFI_PS_NONE the same backstep just
+ * freezes esp_timer consumers: the device stays up, every sampler keeps
+ * running, and the recovery is observable. Default ON to match the original
+ * report; set 0 for long observation runs. */
+#ifndef REPRO_MODEM_SLEEP
+#define REPRO_MODEM_SLEEP 1
+#endif
 #if REPRO_WIFI
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -88,8 +98,7 @@ static void wifi_start(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());
-    /* match ESPHome's esp32 default: power_save_mode "light" */
-    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_MIN_MODEM));
+    ESP_ERROR_CHECK(esp_wifi_set_ps(REPRO_MODEM_SLEEP ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE));
 }
 #endif
 
@@ -449,8 +458,9 @@ static void monitor_task(void *arg)
             /* WiFi is THE VARIABLE UNDER TEST. Without this line a null result
              * after days of running would be uninterpretable -- we could not
              * tell "WiFi up, no stall" from "WiFi silently dropped". */
-            ESP_LOGI(TAG, "  wifi %s | disconnects %" PRIu32 " | ps=MIN_MODEM",
-                     s_wifi_up ? "UP" : "DOWN", s_wifi_disconnects);
+            ESP_LOGI(TAG, "  wifi %s | disconnects %" PRIu32 " | ps=%s",
+                     s_wifi_up ? "UP" : "DOWN", s_wifi_disconnects,
+                     REPRO_MODEM_SLEEP ? "MIN_MODEM" : "NONE");
 #endif
 #else
             ESP_LOGI(TAG, "esp_timer %lld ms | tick %" PRIu32 " ms | deficit %lld ms | backsteps %"
@@ -492,7 +502,7 @@ void app_main(void)
         }
     }
 #if REPRO_WIFI
-    ESP_LOGW(TAG, "WiFi ENABLED, modem sleep WIFI_PS_MIN_MODEM (matches ESPHome default)");
+    ESP_LOGW(TAG, "WiFi ENABLED, ps=%s", REPRO_MODEM_SLEEP ? "MIN_MODEM (panic path armed)" : "NONE (observation mode)");
 #else
     ESP_LOGW(TAG, "WiFi DISABLED (control)");
 #endif
