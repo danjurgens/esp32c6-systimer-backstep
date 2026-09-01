@@ -33,14 +33,14 @@ Full evidence: [REPORT.md](REPORT.md).
 Reported upstream: [espressif/esp-idf#19036](https://github.com/espressif/esp-idf/issues/19036).
 
 **Updates since filing (2026-09-01):** two further events, bringing the total
-to **9 bit-level-verified events** across two boards. One cleared **seven** bits
+to **10 bit-level-verified events** across two boards. One cleared **seven** bits
 at once ({35,34,32,31,29,28,26}); one was captured in observation mode
 (`REPRO_MODEM_SLEEP=0`) — no panic, and the device is still running with its
 53.8-minute deficit intact, demonstrating the persistent-deficit behaviour
-live. Observed range so far: bits 26–39, 1–7 per event, always expressible as
+live. Observed range so far: bits 26–39 cleared (witnesses to bit 40), 1–7 per event, magnitudes 8.9 min–12 h, always expressible as
 all set bits within one contiguous span. The spans show structure: none of
 the nine ever crosses the 35/36 boundary, every multi-bit event starts at
-exactly bit 26, and nothing below 26 has ever cleared (the 50 ms sampler
+exactly bit 26 (single-bit clears float within a segment), and nothing below 26 has ever cleared (the 50 ms sampler
 would catch even sub-second events). The 35/36 boundary is *witnessed*, not
 inferred: in all four wide events, set bits at 36–39 sat directly above the
 cleared span and survived untouched — and conversely one event cleared bit 36
