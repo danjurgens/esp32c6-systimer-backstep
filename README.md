@@ -41,7 +41,10 @@ live. Observed range so far: bits 26–39, 1–7 per event, always expressible a
 all set bits within one contiguous span. The spans show structure: none of
 the nine ever crosses the 35/36 boundary, every multi-bit event starts at
 exactly bit 26, and nothing below 26 has ever cleared (the 50 ms sampler
-would catch even sub-second events). Consistent with 10-bit counter
+would catch even sub-second events). The 35/36 boundary is *witnessed*, not
+inferred: in all four wide events, set bits at 36–39 sat directly above the
+cleared span and survived untouched — and conversely one event cleared bit 36
+alone while the populated [26,35] region below survived. Consistent with 10-bit counter
 segments [26,35] / [36,45] losing state as a group, anchored at the
 segment base. Notably these boundaries ignore the programmer-visible word
 layout — the [26,35] spans straddle the counter's own VALUE_LO[31:0] /
