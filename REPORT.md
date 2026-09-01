@@ -261,7 +261,7 @@ load at 3 transfers/s, samples `esp_timer` around every transfer and every 50 ms
 of idle, and persists each event to NVS so a panic-reboot cannot lose it.
 
 **Event rate:** 8 events in ~59 h of cumulative Wi-Fi-enabled runtime on one
-board (mean ≈ 7 h; first event 2.8–10.7 h after boot across runs). The same
+board (mean ≈ 7 h; first event 2.0–11.2 h after boot across runs). The same
 board ran 55.7 h with `REPRO_WIFI=0` and zero events.
 
 ---

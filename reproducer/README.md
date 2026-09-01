@@ -13,7 +13,7 @@ conditions established there:
 - Neither alone reproduces (55.7 h Wi-Fi-off: zero events; non-I2C nodes:
   zero events over weeks).
 - Events occur while the I2C bus is idle, not during transfers.
-- Observed rate with both active: ~1 event per 7 h (2.8–12.5 h to first);
+- Observed rate with both active: ~1 event per 7 h (2.0–11.2 h to first);
   a second board has gapped as long as ~76 h once.
 
 **If you are trying to replicate:** a quiet hour means nothing. At the
