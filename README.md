@@ -43,7 +43,11 @@ the nine ever crosses the 35/36 boundary, every multi-bit event starts at
 exactly bit 26, and nothing below 26 has ever cleared (the 50 ms sampler
 would catch even sub-second events). Consistent with 10-bit counter
 segments [26,35] / [36,45] losing state as a group, anchored at the
-segment base.
+segment base. Notably these boundaries ignore the programmer-visible word
+layout — the [26,35] spans straddle the counter's own VALUE_LO[31:0] /
+VALUE_HI[19:0] split at bit 32 — so the grouping reflects structure inside
+the counter core (e.g. timing-driven carry-pipeline segments), not anything
+at the register, bus, or software level.
 
 To be explicit about what "decomposes into cleared bits" means: after each
 event, `UNIT0 == UNIT1 & ~mask` — the counter's value is bit-for-bit identical
