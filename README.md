@@ -38,7 +38,12 @@ at once ({35,34,32,31,29,28,26}); one was captured in observation mode
 (`REPRO_MODEM_SLEEP=0`) — no panic, and the device is still running with its
 53.8-minute deficit intact, demonstrating the persistent-deficit behaviour
 live. Observed range so far: bits 26–39, 1–7 per event, always expressible as
-all set bits within one contiguous span.
+all set bits within one contiguous span. The spans show structure: none of
+the nine ever crosses the 35/36 boundary, every multi-bit event starts at
+exactly bit 26, and nothing below 26 has ever cleared (the 50 ms sampler
+would catch even sub-second events). Consistent with 10-bit counter
+segments [26,35] / [36,45] losing state as a group, anchored at the
+segment base.
 
 To be explicit about what "decomposes into cleared bits" means: after each
 event, `UNIT0 == UNIT1 & ~mask` — the counter's value is bit-for-bit identical
