@@ -245,8 +245,9 @@ events refute it.
 
 ## Minimal reproducer
 
-`idf-repro/` in the attached archive. ~350 lines, ESP-IDF v5.5.5, no external
-components. Build flags:
+Source: **<https://github.com/danjurgens/esp32c6-systimer-backstep>**
+(`reproducer/` — ~400 lines, ESP-IDF v5.5.5, no external components; this
+report is mirrored there as `REPORT.md`). Build flags:
 
 ```
 idf.py -DREPRO_WIFI=1 -DREPRO_I2C=1 -DREPRO_I2C_HZ=100000 \
@@ -306,6 +307,15 @@ and `esp_timer_private_advance()` — IDF's own re-sync call — puts it back. A
 1 Hz task doing exactly that has absorbed **six** real events on the production
 node with no observable interruption: publish cadence stayed metronomic across
 each, and uptime never reset.
+
+Both mitigations are published as ready-to-use ESPHome external components in
+the same repository:
+
+- [`clock_guard`](https://github.com/danjurgens/esp32c6-systimer-backstep/tree/main/components/clock_guard)
+  — the in-place repair described above
+- [`loop_watchdog`](https://github.com/danjurgens/esp32c6-systimer-backstep/tree/main/components/loop_watchdog)
+  — a reboot watchdog for the frozen-scheduler state, run behind clock_guard
+  as the fail-safe layer
 
 This is a workaround, not a fix; it cannot help the first few hundred
 milliseconds, and it does not prevent the Wi-Fi PHY hang if the corruption lands
