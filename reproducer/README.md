@@ -51,7 +51,7 @@ E (...) repro:     tick=4519017 ms  UNIT0=3585451554 UNIT1=72304272029  CONF=0xf
 Guru Meditation Error: Core  0 panic'ed (Interrupt wdt timeout on CPU0).
 ```
 
-`UNIT1 - UNIT0` decomposes into the exact value of 1–6 cleared counter bits;
+`UNIT1 - UNIT0` decomposes into the exact value of 1–7 cleared counter bits (i.e. UNIT0 equals UNIT1 with those bits zeroed);
 compare the two values bitwise to see which.
 
 ## Build flags

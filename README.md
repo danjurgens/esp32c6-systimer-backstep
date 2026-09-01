@@ -32,6 +32,20 @@ If any of these sound familiar, you are probably here for the right reason:
 Full evidence: [REPORT.md](REPORT.md).
 Reported upstream: [espressif/esp-idf#19036](https://github.com/espressif/esp-idf/issues/19036).
 
+**Updates since filing (2026-09-01):** two further events, bringing the total
+to **9 bit-level-verified events** across two boards. One cleared **seven** bits
+at once ({35,34,32,31,29,28,26}); one was captured in observation mode
+(`REPRO_MODEM_SLEEP=0`) — no panic, and the device is still running with its
+53.8-minute deficit intact, demonstrating the persistent-deficit behaviour
+live. Observed range so far: bits 26–39, 1–7 per event, always expressible as
+all set bits within one contiguous span.
+
+To be explicit about what "decomposes into cleared bits" means: after each
+event, `UNIT0 == UNIT1 & ~mask` — the counter's value is bit-for-bit identical
+to the unaffected reference counter except that 1–7 specific bits read zero.
+Not "a backward jump that happens to factor": the surrounding bits are
+untouched, which a borrow-propagating subtraction could not produce.
+
 | directory | what it is |
 |---|---|
 | [`reproducer/`](reproducer/) | ~400-line bare ESP-IDF app that reproduces the fault in hours and prints/persists the exact bit-level evidence |
