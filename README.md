@@ -51,7 +51,11 @@ segment base. Notably these boundaries ignore the programmer-visible word
 layout — the [26,35] spans straddle the counter's own VALUE_LO[31:0] /
 VALUE_HI[19:0] split at bit 32 — so the grouping reflects structure inside
 the counter core (e.g. timing-driven carry-pipeline segments), not anything
-at the register, bus, or software level.
+at the register, bus, or software level. Notably bit 26 is exactly the
+52-bit counter's midpoint: the structure is consistent with a half-split
+counter — a fast low 26-bit half that self-refreshes every tick (immune) and
+a carry-fed high half that holds rare-toggle state (the vulnerable part),
+with finer grouping inside the high half.
 
 To be explicit about what "decomposes into cleared bits" means: after each
 event, `UNIT0 == UNIT1 & ~mask` — the counter's value is bit-for-bit identical
