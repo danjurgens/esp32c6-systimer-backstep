@@ -37,6 +37,7 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "esp_private/esp_timer_private.h"
 
 /* ---- WiFi (REPRO_WIFI=1) --------------------------------------------------
  * THE VARIABLE UNDER TEST. Bare-IDF + I2C alone ran 20.43 h / 220,476
@@ -62,6 +63,32 @@
  * report; set 0 for long observation runs. */
 #ifndef REPRO_MODEM_SLEEP
 #define REPRO_MODEM_SLEEP 1
+#endif
+/* ---- Time-warp (REPRO_TIMEWARP=1) -----------------------------------------
+ * The fault clears already-SET counter bits, so bits are only testable once
+ * uptime has set them: bit 40 needs 19 h, bit 45 needs 24 DAYS, bit 50 needs
+ * 2.2 years. Rather than wait, preset the counter into the future with
+ * esp_timer_private_set() -- IDF's own API, the one the light-sleep resync
+ * uses -- so the whole upper range is clearable from minute one.
+ *
+ * Preset = 2^51 - 2^41 ticks (bits 41..50 set, bit 51 clear):
+ *   - wrap horizon 4.5 years (bit 51 guards the top)
+ *   - bits 26..40 fill on their natural schedule, as before
+ *   - natural carry rolls 41..50 over after 2^41 ticks = 38.1 h, so the
+ *     high-bit observation window is ~38 h per boot; re-preset by rebooting.
+ * Detection is delta-based, so a cleared high bit (a days-to-weeks backward
+ * jump) is caught exactly like any other. NOTE: with the counter warped,
+ * UNIT1-UNIT0 is hugely negative; external tooling comparing the two must
+ * subtract the preset. */
+#ifndef REPRO_TIMEWARP
+#define REPRO_TIMEWARP 0
+#endif
+/* With TIMEWARP, the preset's high bits erode two ways: events clear them,
+ * and natural carry rolls 41..50 over at 2^41 ticks = 38.1 h. Since the
+ * preset reapplies in app_main, a REBOOT restores full witness density.
+ * Auto-reboot on the TICK clock (immune to the fault) before rollover. */
+#ifndef REPRO_REWARP_HOURS
+#define REPRO_REWARP_HOURS 34
 #endif
 #if REPRO_WIFI
 #include "esp_wifi.h"
@@ -443,6 +470,14 @@ static void monitor_task(void *arg)
         prev_esp_us  = esp_us;
         prev_tick_ms = tick_ms;
 
+#if REPRO_TIMEWARP && REPRO_REWARP_HOURS
+        if (tick_ms > (uint32_t)REPRO_REWARP_HOURS * 3600U * 1000U) {
+            ESP_LOGW(TAG, "REWARP: %u h elapsed on tick clock; rebooting to re-apply the preset "
+                          "before natural carry erodes bits 41..50.", (unsigned)REPRO_REWARP_HOURS);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            esp_restart();
+        }
+#endif
         /* Heartbeat once a minute: esp_timer vs tick, and the running deficit. */
         static uint32_t n;
         if (++n % (60000 / period_ms) == 0) {
@@ -479,6 +514,16 @@ void app_main(void)
         nvs_flash_init();
     }
     persist_load();
+#if REPRO_TIMEWARP
+    {
+        const uint64_t warp_ticks = (1ULL<<51) - (1ULL<<41);
+        const uint64_t warp_us    = warp_ticks / 16ULL;   /* exact: both /16 */
+        esp_timer_private_set(warp_us);
+        ESP_LOGW(TAG, "TIMEWARP: esp_timer preset to %llu us (~8.9 yr): counter bits 41..50 SET",
+                 (unsigned long long) warp_us);
+        ESP_LOGW(TAG, "TIMEWARP: high-bit observation window ~38 h until natural carry; UNIT1-UNIT0 baseline is now -(preset)");
+    }
+#endif
 #if REPRO_WIFI
     wifi_start();
 #endif
