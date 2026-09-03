@@ -134,7 +134,23 @@ void ClockGuard::task_loop() {
 
     if (excess > (int32_t) this->threshold_ms_) {
       // esp_timer lost time -- this is the fault.
-      if (excess <= (int32_t) this->max_correction_ms_) {
+      //
+      // Plausibility bound (2026-09-03, replacing a fixed 2 h cap): a real
+      // bit-clear deficit can NEVER exceed the boot's tick uptime -- the
+      // counter cannot lose more than it holds. Events up to 21.5 h were
+      // observed once uptime allowed them, so any fixed cap either blocks
+      // legitimate repairs (long boots) or admits impossible ones (short
+      // boots). The uptime bound is exact on both sides: the 62 h phantom on
+      // a 15 h boot fails it; a 38 h bit-41 clear on a 3-day boot passes.
+      // millis() wraps at 49.7 days; a boot older than that re-tightens the
+      // bound harmlessly (worst case: one unnecessary refusal -> reboot,
+      // i.e. the pre-clock_guard behaviour). max_correction remains as an
+      // optional additional ceiling for users who configure it tighter.
+      const int64_t uptime_bound_ms = (int64_t) millis() + 60000;
+      const bool plausible = (int64_t) excess <= uptime_bound_ms;
+      // int64 compare: a large configured ceiling (e.g. 30d = 2.59e9 ms)
+      // overflows int32 and would refuse everything if cast narrow.
+      if (plausible && (int64_t) excess <= (int64_t) this->max_correction_ms_) {
         this->apply_correction_(excess);
         // Re-measure rather than assuming: the correction should have
         // returned divergence to the baseline.
@@ -146,9 +162,12 @@ void ClockGuard::task_loop() {
         // reboot. A correction this large is more likely our bug than the
         // hardware's fault.
         this->refused_++;
-        ESP_LOGE(TAG, "REFUSING correction of %d ms -- exceeds max_correction %u ms. "
-                      "Leaving it to loop_watchdog.",
-                 (int) excess, (unsigned) this->max_correction_ms_);
+        ESP_LOGE(TAG, "REFUSING correction of %d ms -- %s (uptime bound %lld ms, "
+                      "max_correction %u ms). Leaving it to loop_watchdog.",
+                 (int) excess,
+                 plausible ? "exceeds configured max_correction"
+                           : "IMPOSSIBLE: exceeds boot uptime (cannot clear more than the counter holds)",
+                 (long long) uptime_bound_ms, (unsigned) this->max_correction_ms_);
         // 2026-09-03 02:00 taught us this branch is where the WEIRD readings
         // land -- a +62 h divergence on a 15 h boot, impossible as a UNIT0
         // bit-clear (you cannot clear more than the counter holds), implying

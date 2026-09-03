@@ -41,16 +41,16 @@ with a full register dump: A5 = 0x6000a000 (SYSTIMER base), RA =
 recorded — a bounded retry + UPDATE reissue in the HAL would make it
 recoverable in software.
 
-**Possible third manifestation (2026-09-03):** a production node measured a
-constant +62 h divergence between `millis()` and `esp_timer_get_time()` on a
-~15 h boot — impossible as a counter bit-clear (you cannot clear more than
-the counter holds), implying esp_timer returned *negative* time. The repair
-component refused it (sanity cap) and the reboot watchdog recovered the node;
-the refusal path now captures raw counters vs API clocks to classify the next
-occurrence.
+**Largest natural event (2026-09-03):** a production node 63 hours into a
+boot took a three-bit clear {41,40,38} — a 62.04 h backward jump (measured
+223,338,300 ms vs predicted 223,338,299.4 — residual +0.6 ms). Its repair
+component initially *refused* the correction as implausible under a fixed
+2 h sanity cap and the reboot watchdog recovered the node instead; the cap
+is now a physical plausibility bound (a bit-clear deficit can never exceed
+the boot's tick uptime), which repairs events this large in place.
 
 **Updates since filing (2026-09-01):** two further events, bringing the total
-to **17 bit-level-verified events** across two boards. One cleared **seven** bits
+to **18 bit-level-verified events** across two boards. One cleared **seven** bits
 at once ({35,34,32,31,29,28,26}); one was captured in observation mode
 (`REPRO_MODEM_SLEEP=0`) — no panic, and the device is still running with its
 53.8-minute deficit intact, demonstrating the persistent-deficit behaviour
