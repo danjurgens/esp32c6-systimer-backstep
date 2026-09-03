@@ -50,7 +50,7 @@ is now a physical plausibility bound (a bit-clear deficit can never exceed
 the boot's tick uptime), which repairs events this large in place.
 
 **Updates since filing (2026-09-01):** two further events, bringing the total
-to **18 bit-level-verified events** across two boards. One cleared **seven** bits
+to **19 bit-level-verified events** across two boards. One cleared **seven** bits
 at once ({35,34,32,31,29,28,26}); one was captured in observation mode
 (`REPRO_MODEM_SLEEP=0`) — no panic, and the device is still running with its
 53.8-minute deficit intact, demonstrating the persistent-deficit behaviour
