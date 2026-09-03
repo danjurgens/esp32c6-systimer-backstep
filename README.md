@@ -37,25 +37,31 @@ to **15 bit-level-verified events** across two boards. One cleared **seven** bit
 at once ({35,34,32,31,29,28,26}); one was captured in observation mode
 (`REPRO_MODEM_SLEEP=0`) — no panic, and the device is still running with its
 53.8-minute deficit intact, demonstrating the persistent-deficit behaviour
-live. Observed range so far: bits 26–40 cleared, 1–7 per event, magnitudes 8.4 s–21.5 h (the small end is invisible at symptom level, so real-world rates are likely underestimated), always expressible as
-all set bits within one contiguous span. The spans show structure: none of
-the nine ever crosses the 35/36 boundary, clears are contiguous sub-ranges floating
-within a segment (every [26,35]-region multi-bit event so far starts at 26;
-a {40,37} clear left bit 36 set and surviving directly below it), and nothing below 26 has ever cleared (the 50 ms sampler
-would catch even sub-second events). The 35/36 boundary is *witnessed*, not
-inferred: in all four wide events, set bits at 36–39 sat directly above the
-cleared span and survived untouched — and conversely one event cleared bit 36
-alone while the populated [26,35] region below survived. Consistent with 10-bit counter
-segments [26,35] / [36,45] losing state as a group, anchored at the
-segment base. Notably these boundaries ignore the programmer-visible word
-layout — the [26,35] spans straddle the counter's own VALUE_LO[31:0] /
-VALUE_HI[19:0] split at bit 32 — so the grouping reflects structure inside
-the counter core (e.g. timing-driven carry-pipeline segments), not anything
-at the register, bus, or software level. Notably bit 26 is exactly the
-52-bit counter's midpoint: the structure is consistent with a half-split
-counter — a fast low 26-bit half that self-refreshes every tick (immune) and
-a carry-fed high half that holds rare-toggle state (the vulnerable part),
-with finer grouping inside the high half.
+live. Observed range so far: bits 26–49 cleared, 1–6 bits per event, magnitudes
+8.4 s to 492 days.
+
+**Revision (event 15):** with the counter deliberately preset to dense
+high-bit content, **clears are scattered subsets, not contiguous ranges** —
+one event cleared bits {49,46,45,43,41,40} while set bits 42, 44, 47 and 48
+*inside that same span* survived untouched. Fourteen earlier events looked
+contiguous only because the gaps in their patterns held zeros, which cannot
+testify; the first event with interior witnesses refuted contiguity outright.
+
+What survives, now at 15/15 events:
+
+- **Nothing below bit 26 ever clears.** Bit 26 is exactly the 52-bit
+  counter's midpoint — consistent with a half-split counter whose low half
+  increments (and thereby refreshes) every tick and is immune, while the
+  carry-fed high half holds rare-toggle state and is the vulnerable part.
+- **No event has ever mixed bits from both sides of the 35/36 line**, with
+  set survivors witnessed on both sides of it repeatedly. Whether this is a
+  hard structural edge or an artifact of event-window placement is open; a
+  single mixed event would settle it.
+- The affected structure ignores the programmer-visible word layout entirely
+  (patterns straddle the VALUE_LO[31:0]/VALUE_HI[19:0] register split at bit
+  32, and witnesses inside nibbles/bytes survive), so the grouping reflects
+  structure inside the counter core, not anything at the register, bus, or
+  software level.
 
 To be explicit about what "decomposes into cleared bits" means: after each
 event, `UNIT0 == UNIT1 & ~mask` — the counter's value is bit-for-bit identical
