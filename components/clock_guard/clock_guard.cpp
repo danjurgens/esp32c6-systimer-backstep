@@ -149,6 +149,28 @@ void ClockGuard::task_loop() {
         ESP_LOGE(TAG, "REFUSING correction of %d ms -- exceeds max_correction %u ms. "
                       "Leaving it to loop_watchdog.",
                  (int) excess, (unsigned) this->max_correction_ms_);
+        // 2026-09-03 02:00 taught us this branch is where the WEIRD readings
+        // land -- a +62 h divergence on a 15 h boot, impossible as a UNIT0
+        // bit-clear (you cannot clear more than the counter holds), implying
+        // esp_timer_get_time() returned NEGATIVE time. The refusal path
+        // captured nothing, so the one reading that could classify it (raw
+        // counters vs API clocks) was lost to the reboot. Dump it here,
+        // rate-limited: first refusal and every 60th thereafter.
+        if ((this->refused_ - 1) % 60 == 0) {
+          uint64_t r0 = 0, r1 = 0;
+          read_raw_counters_(&r0, &r1);
+          const int64_t api_esp_us = esp_timer_get_time();
+          const uint32_t api_ms = millis();
+          ESP_LOGE(TAG, "REFUSAL RAW: UNIT0=%llu UNIT1=%llu diff=%lld ticks "
+                        "(raw diff as ms: %lld)",
+                   (unsigned long long) r0, (unsigned long long) r1,
+                   (long long) (r1 - r0), (long long) ((r1 - r0) / 16000));
+          ESP_LOGE(TAG, "REFUSAL API: esp_timer=%lld us, millis=%lu ms, "
+                        "millis-esp/1000=%lld ms (raw-vs-API mismatch => "
+                        "software timebase corrupt; match => counters really diverged)",
+                   (long long) api_esp_us, (unsigned long) api_ms,
+                   (long long) ((int64_t) api_ms - api_esp_us / 1000));
+        }
       }
     } else if (excess < -1000) {
       // NEGATIVE excess means the TICK lost time (missed interrupts), not
