@@ -32,6 +32,15 @@ If any of these sound familiar, you are probably here for the right reason:
 Full evidence: [REPORT.md](REPORT.md).
 Reported upstream: [espressif/esp-idf#19036](https://github.com/espressif/esp-idf/issues/19036).
 
+**Second manifestation (2026-09-02):** the counter's snapshot handshake can
+also wedge — `systimer_hal_get_counter_value()`'s unbounded
+`while (!VALUE_VALID);` spin (executed from ROM on the C6) never returns, so
+any `esp_timer_get_time()` caller hangs until the Interrupt WDT fires. Caught
+with a full register dump: A5 = 0x6000a000 (SYSTIMER base), RA =
+`esp_timer_impl_get_time`. This freezes the reader, so no backstep gets
+recorded — a bounded retry + UPDATE reissue in the HAL would make it
+recoverable in software.
+
 **Updates since filing (2026-09-01):** two further events, bringing the total
 to **15 bit-level-verified events** across two boards. One cleared **seven** bits
 at once ({35,34,32,31,29,28,26}); one was captured in observation mode
