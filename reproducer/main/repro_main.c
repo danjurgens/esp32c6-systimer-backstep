@@ -90,6 +90,13 @@
 #ifndef REPRO_REWARP_HOURS
 #define REPRO_REWARP_HOURS 34
 #endif
+/* One-shot ranging sanity check at boot: initialise the VL53L1X for ranging,
+ * read a single distance, log it, then hand back to model-id hammering. Init
+ * sequence lifted verbatim from the field vl53l1x_tof component. Default on;
+ * costs one measurement (~50 ms) at startup and nothing thereafter. */
+#ifndef REPRO_RANGE_CHECK
+#define REPRO_RANGE_CHECK 1
+#endif
 #if REPRO_WIFI
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -340,6 +347,90 @@ static void report_phase_backstep(int64_t before_us, int64_t after_us,
     persist_phase(kind, idx, back, s_i2c_ok);
 }
 
+
+#if REPRO_RANGE_CHECK
+/* 16-bit-addressed I2C helpers over the existing device handle, and a one-shot
+ * VL53L1X range read. Mirrors my_components/vl53l1x_tof exactly. */
+static esp_err_t vl_w8(uint16_t reg, uint8_t v) {
+    uint8_t b[3] = {(uint8_t)(reg>>8),(uint8_t)reg,v};
+    return i2c_master_transmit(s_dev, b, 3, I2C_TIMEOUT_MS);
+}
+static esp_err_t vl_w16(uint16_t reg, uint16_t v) {
+    uint8_t b[4] = {(uint8_t)(reg>>8),(uint8_t)reg,(uint8_t)(v>>8),(uint8_t)v};
+    return i2c_master_transmit(s_dev, b, 4, I2C_TIMEOUT_MS);
+}
+static esp_err_t vl_w32(uint16_t reg, uint32_t v) {
+    uint8_t b[6] = {(uint8_t)(reg>>8),(uint8_t)reg,
+                    (uint8_t)(v>>24),(uint8_t)(v>>16),(uint8_t)(v>>8),(uint8_t)v};
+    return i2c_master_transmit(s_dev, b, 6, I2C_TIMEOUT_MS);
+}
+static esp_err_t vl_r8(uint16_t reg, uint8_t *v) {
+    uint8_t a[2] = {(uint8_t)(reg>>8),(uint8_t)reg};
+    return i2c_master_transmit_receive(s_dev, a, 2, v, 1, I2C_TIMEOUT_MS);
+}
+static esp_err_t vl_r16(uint16_t reg, uint16_t *v) {
+    uint8_t a[2] = {(uint8_t)(reg>>8),(uint8_t)reg}, r[2];
+    esp_err_t e = i2c_master_transmit_receive(s_dev, a, 2, r, 2, I2C_TIMEOUT_MS);
+    if (e==ESP_OK) *v = ((uint16_t)r[0]<<8)|r[1];
+    return e;
+}
+static esp_err_t vl_rblock(uint16_t reg, uint8_t *buf, size_t len) {
+    uint8_t a[2] = {(uint8_t)(reg>>8),(uint8_t)reg};
+    return i2c_master_transmit_receive(s_dev, a, 2, buf, len, I2C_TIMEOUT_MS);
+}
+
+static void range_sanity_check(void) {
+#define RK(x) do{ if((x)!=ESP_OK){ ESP_LOGW(TAG,"RANGE: I2C fail @%d",__LINE__); return; } }while(0)
+    uint16_t mid=0; RK(vl_r16(0x010F,&mid));
+    if (mid != 0xEACC) { ESP_LOGW(TAG,"RANGE: unexpected model id 0x%04X (skip)",mid); return; }
+    RK(vl_w8(0x0000,0x00)); esp_rom_delay_us(100);
+    RK(vl_w8(0x0000,0x01)); vTaskDelay(pdMS_TO_TICKS(1));
+    uint32_t t0=(uint32_t)(xTaskGetTickCount()*portTICK_PERIOD_MS); uint8_t st=0;
+    do { if(vl_r8(0x00E5,&st)!=ESP_OK){ESP_LOGW(TAG,"RANGE: boot poll fail");return;}
+         if(((uint32_t)(xTaskGetTickCount()*portTICK_PERIOD_MS))-t0>100){ESP_LOGW(TAG,"RANGE: boot timeout");return;}
+    } while((st&0x01)==0);
+    uint8_t v2e=0; RK(vl_r8(0x002E,&v2e)); RK(vl_w8(0x002E,v2e|0x01));
+    uint16_t fast_osc=0, osc_cal=0; RK(vl_r16(0x0006,&fast_osc)); RK(vl_r16(0x00DE,&osc_cal));
+    if(!osc_cal) osc_cal=1;
+    RK(vl_w16(0x0024,0x0A00)); RK(vl_w8(0x0031,0x02));
+    RK(vl_w8(0x0036,0x08)); RK(vl_w8(0x0037,0x10)); RK(vl_w8(0x0039,0x01));
+    RK(vl_w8(0x003E,0xFF)); RK(vl_w8(0x003F,0x00)); RK(vl_w8(0x0040,0x02));
+    RK(vl_w16(0x0050,0x0000)); RK(vl_w16(0x0052,0x0000)); RK(vl_w8(0x0057,0x38));
+    RK(vl_w16(0x0064,360)); RK(vl_w16(0x0066,192)); RK(vl_w8(0x0071,0x01)); RK(vl_w8(0x007C,0x01));
+    RK(vl_w8(0x007E,0x02)); RK(vl_w8(0x0082,0x00)); RK(vl_w8(0x0077,0x01)); RK(vl_w8(0x0081,0x8B));
+    RK(vl_w16(0x0054,200<<8)); RK(vl_w8(0x004F,0x02)); RK(vl_w8(0x0060,0x0F)); RK(vl_w8(0x0063,0x0D));
+    RK(vl_w8(0x0069,0xB8)); RK(vl_w8(0x0078,0x0F)); RK(vl_w8(0x0079,0x0D)); RK(vl_w8(0x007A,14)); RK(vl_w8(0x007B,14));
+    uint32_t pll = ((uint32_t)0x01<<30)/fast_osc;
+    uint8_t va=(0x0F+1)<<1; uint32_t ma=((uint32_t)2304*pll)>>6; ma*=va; ma>>=6;
+    uint8_t vb=(0x0D+1)<<1; uint32_t mb=((uint32_t)2304*pll)>>6; mb*=vb; mb>>=6;
+    #define MCA(us) ((((uint32_t)(us)<<12)+(ma>>1))/ma)
+    #define MCB(us) ((((uint32_t)(us)<<12)+(mb>>1))/mb)
+    #define ENC(mclks) ({ uint32_t _m=(mclks); uint16_t _r=0; if(_m>0){uint32_t _ls=_m-1; uint16_t _ms=0; \
+                          while((_ls&0xFFFFFF00)>0){_ls>>=1;_ms++;} _r=(_ms<<8)|(_ls&0xFF);} _r; })
+    uint32_t rt=22736; uint32_t pc=MCA(1000); if(pc>0xFF)pc=0xFF;
+    RK(vl_w8(0x004B,(uint8_t)pc));
+    RK(vl_w16(0x005E,ENC(MCA(rt)))); RK(vl_w16(0x0061,ENC(MCB(rt))));
+    RK(vl_w16(0x005A,ENC(MCA(1))));  RK(vl_w16(0x005C,ENC(MCB(1))));
+    uint16_t osc22=0; RK(vl_r16(0x0022,&osc22)); RK(vl_w16(0x001E,osc22*4));
+    RK(vl_w32(0x006C,100*osc_cal));
+    RK(vl_w8(0x0086,0x01)); RK(vl_w8(0x0087,0x40));
+    /* wait for one result, bounded ~600 ms */
+    uint32_t w0=(uint32_t)(xTaskGetTickCount()*portTICK_PERIOD_MS); uint8_t gs=0;
+    for(;;){ if(vl_r8(0x0031,&gs)!=ESP_OK){ESP_LOGW(TAG,"RANGE: status fail");return;}
+             if((gs&0x01)==0) break;
+             if(((uint32_t)(xTaskGetTickCount()*portTICK_PERIOD_MS))-w0>600){ESP_LOGW(TAG,"RANGE: no result in 600ms");return;}
+             vTaskDelay(pdMS_TO_TICKS(20)); }
+    uint8_t d[17]; RK(vl_rblock(0x0089,d,17));
+    uint8_t rstatus=d[0]; uint16_t raw=((uint16_t)d[13]<<8)|d[14];
+    uint32_t mm=((uint32_t)raw*2011+0x0400)/0x0800;
+    ESP_LOGW(TAG,"RANGE SANITY: %lu mm (%.2f m), range_status=%u  -- sensor optically OK",
+             (unsigned long)mm, mm/1000.0f, rstatus);
+    /* leave the sensor stopped; model-id hammer does not need ranging active */
+    vl_w8(0x0086,0x01); vl_w8(0x0000,0x00);
+#undef RK
+}
+#endif
+
 static void i2c_task(void *arg)
 {
     /* Replicate the FIELD DUTY PATTERN, not just the field throughput.
@@ -362,6 +453,9 @@ static void i2c_task(void *arg)
      */
     uint8_t reg[2] = {0x01, 0x0F};   /* VL53L1X model-id register */
     uint8_t buf[2];
+#if REPRO_RANGE_CHECK
+    range_sanity_check();
+#endif
     int64_t t_prev = esp_timer_get_time();
     for (;;) {
         for (int i = 0; i < REPRO_BURST; i++) {
