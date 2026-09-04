@@ -516,10 +516,16 @@ void app_main(void)
     persist_load();
 #if REPRO_TIMEWARP
     {
-        const uint64_t warp_ticks = (1ULL<<51) - (1ULL<<41);
+        /* Low offset (2026-09-04): two events hit at boot age 11,816 s +-1 s
+         * (same idle chunk) on different boots. Boot-age and counter-content
+         * are the same variable when the preset only touches bits 41+, so a
+         * scheduled-timer trigger and a content trigger are indistinguishable.
+         * Adding 2^33 (8.95 min) to the preset detaches them: a timer twin
+         * recurs at 11,816 s boot age; a content twin recurs 537 s EARLIER. */
+        const uint64_t warp_ticks = (1ULL<<51) - (1ULL<<41) + (1ULL<<33);
         const uint64_t warp_us    = warp_ticks / 16ULL;   /* exact: both /16 */
         esp_timer_private_set(warp_us);
-        ESP_LOGW(TAG, "TIMEWARP: esp_timer preset to %llu us (~8.9 yr): counter bits 41..50 SET",
+        ESP_LOGW(TAG, "TIMEWARP: esp_timer preset to %llu us (~8.9 yr): counter bits 41..50 + 33 SET (low offset 2^33 for the timer-vs-content discriminator)",
                  (unsigned long long) warp_us);
         ESP_LOGW(TAG, "TIMEWARP: high-bit observation window ~38 h until natural carry; UNIT1-UNIT0 baseline is now -(preset)");
     }
