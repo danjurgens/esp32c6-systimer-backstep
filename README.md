@@ -51,7 +51,7 @@ the boot's tick uptime), which repairs events this large in place — validated
 two days later when a 31 h clear {40,39,37} was absorbed with zero downtime.
 
 **Updates since filing (2026-09-01):** two further events, bringing the total
-to **23 bit-level-verified events** across two boards. One cleared **seven** bits
+to **35 bit-level-verified events** across two boards. One cleared **seven** bits
 at once ({35,34,32,31,29,28,26}); one was captured in observation mode
 (`REPRO_MODEM_SLEEP=0`) — no panic, and the device is still running with its
 53.8-minute deficit intact, demonstrating the persistent-deficit behaviour
