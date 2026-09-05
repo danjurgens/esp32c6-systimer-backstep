@@ -47,10 +47,11 @@ boot took a three-bit clear {41,40,38} — a 62.04 h backward jump (measured
 component initially *refused* the correction as implausible under a fixed
 2 h sanity cap and the reboot watchdog recovered the node instead; the cap
 is now a physical plausibility bound (a bit-clear deficit can never exceed
-the boot's tick uptime), which repairs events this large in place.
+the boot's tick uptime), which repairs events this large in place — validated
+two days later when a 31 h clear {40,39,37} was absorbed with zero downtime.
 
 **Updates since filing (2026-09-01):** two further events, bringing the total
-to **20 bit-level-verified events** across two boards. One cleared **seven** bits
+to **21 bit-level-verified events** across two boards. One cleared **seven** bits
 at once ({35,34,32,31,29,28,26}); one was captured in observation mode
 (`REPRO_MODEM_SLEEP=0`) — no panic, and the device is still running with its
 53.8-minute deficit intact, demonstrating the persistent-deficit behaviour
