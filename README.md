@@ -55,24 +55,29 @@ to **35 bit-level-verified events** across two boards. One cleared **seven** bit
 at once ({35,34,32,31,29,28,26}); one was captured in observation mode
 (`REPRO_MODEM_SLEEP=0`) — no panic, and the device is still running with its
 53.8-minute deficit intact, demonstrating the persistent-deficit behaviour
-live. Observed range so far: bits 26–49 cleared, 1–6 bits per event, magnitudes
-8.4 s to 492 days.
+live. Observed range so far (35 bit-verified events across two boards, full
+ledger in EVENTS.md): bits 26–50 cleared, 1–11 bits per event, magnitudes
+8.4 s to 4.5 years (the largest only reachable with a preset counter).
 
 **Revision (event 15):** with the counter deliberately preset to dense
 high-bit content, **clears are scattered subsets, not contiguous ranges** —
 one event cleared bits {49,46,45,43,41,40} while set bits 42, 44, 47 and 48
-*inside that same span* survived untouched. Fourteen earlier events looked
-contiguous only because the gaps in their patterns held zeros, which cannot
-testify; the first event with interior witnesses refuted contiguity outright.
+*inside that same span* survived untouched. A witness pass over all 35 events confirms this: 34 show no surviving set bit
+inside their span, but those were sparse-content events with nothing to
+testify — they are consistent with contiguity, not evidence for it. Only the
+dense preset created interior witnesses, and the first partial clear in that
+field refuted contiguity outright. Strict contiguous ranges are retired; the
+fault clears a *subset* of the set bits within a bounded window, and that
+subset can be scattered.
 
-What survives, now at 15/15 events:
+What survives, at 35/35 verified events:
 
 - **Nothing below bit 26 ever clears.** Bit 26 is exactly the 52-bit
   counter's midpoint — consistent with a half-split counter whose low half
   increments (and thereby refreshes) every tick and is immune, while the
   carry-fed high half holds rare-toggle state and is the vulnerable part.
-- **No event has ever mixed bits from both sides of the 35/36 line**, with
-  set survivors witnessed on both sides of it repeatedly. Whether this is a
+- **No event has ever mixed bits from both sides of the 35/36 line** (35/35),
+  with set survivors witnessed on both sides of it repeatedly. Whether this is a
   hard structural edge or an artifact of event-window placement is open; a
   single mixed event would settle it.
 - The affected structure ignores the programmer-visible word layout entirely
