@@ -50,6 +50,11 @@ raws. Bits below 26 excluded (never cleared; low diffs are capture skew).
 | GA-10 | 56.27 min | [35, 34, 31, 28, 26] | (26, 35) | no |
 | GA-11 | 31.0 h | [40, 39, 37] | (37, 40) | no |
 
+### Update 2026-09-06 17:40
+
+GA-13 (correction #19): {35,32,29} span(29,35) 40.82min, no cross, no survivors. 37 verified (24 TB + 13 GA).
+Garage 19 corrections, 0 crossings, 0 unplanned downtime.
+
 ### Update 2026-09-05 20:14 (post-audit)
 
 GA-12 (correction #18): {35,32,31,29,26} span(26,35) 43.13min, no cross,
