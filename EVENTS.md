@@ -50,6 +50,12 @@ raws. Bits below 26 excluded (never cleared; low diffs are capture skew).
 | GA-10 | 56.27 min | [35, 34, 31, 28, 26] | (26, 35) | no |
 | GA-11 | 31.0 h | [40, 39, 37] | (37, 40) | no |
 
+### Update 2026-09-05 20:14 (post-audit)
+
+GA-12 (correction #18): {35,32,31,29,26} span(26,35) 43.13min, no cross,
+no interior survivors. Garage now 18 corrections, 12 raw-captured/verified.
+Bit-verified total: 36 (24 TB + 12 GA). 35/36 crossings: still 0.
+
 ## Totals
 
 - **Bit-level-verified: 35** (24 testbed + 11 garage)
