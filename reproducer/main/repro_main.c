@@ -111,14 +111,47 @@ static void wifi_evt(void *arg, esp_event_base_t base, int32_t id, void *data)
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         s_wifi_up = false; s_wifi_disconnects++;
+        if (s_wifi_disconnects <= 12) {
+            const wifi_event_sta_disconnected_t *d = data;
+            ESP_LOGW("repro", "wifi disconnect #%" PRIu32 ": reason %u rssi %d",
+                     s_wifi_disconnects, d->reason, d->rssi);
+        }
         esp_wifi_connect();               /* keep the radio working, always */
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         s_wifi_up = true;
     }
 }
 
+/* Seeed XIAO ESP32-C6: the antenna is behind an RF switch. GPIO3 LOW powers the
+ * switch, GPIO14 LOW selects the on-board ceramic antenna (HIGH = U.FL).
+ * Seeed's Arduino core does this in initVariant(); bare IDF does NOT, leaving
+ * the switch at whatever the floating pins read -- observed 2026-09-23 as ~25
+ * failed associations/min on a XIAO where a DevKitC-1 on the same bench, same
+ * firmware and credentials, joined instantly. On other boards GPIO3/14 are
+ * ordinary pins; set REPRO_XIAO_RF=0 if anything is wired to them. */
+#ifndef REPRO_XIAO_RF
+#define REPRO_XIAO_RF 1
+#endif
+#if REPRO_XIAO_RF
+#include "driver/gpio.h"
+static void xiao_rf_switch_onboard(void)
+{
+    gpio_config_t io = {
+        .pin_bit_mask = (1ULL << 3) | (1ULL << 14),
+        .mode = GPIO_MODE_OUTPUT,
+    };
+    ESP_ERROR_CHECK(gpio_config(&io));
+    gpio_set_level(3, 0);      /* RF switch power on */
+    vTaskDelay(pdMS_TO_TICKS(100));
+    gpio_set_level(14, 0);     /* on-board antenna */
+}
+#endif
+
 static void wifi_start(void)
 {
+#if REPRO_XIAO_RF
+    xiao_rf_switch_onboard();
+#endif
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_create_default_wifi_sta();
@@ -142,8 +175,14 @@ static void wifi_start(void)
 
 #if REPRO_I2C
 #include "driver/i2c_master.h"
-#define I2C_SDA_GPIO   22      /* XIAO C6 D4 */
-#define I2C_SCL_GPIO   23      /* XIAO C6 D5 */
+#ifndef REPRO_SDA_GPIO
+#define REPRO_SDA_GPIO 22      /* XIAO C6 D4 */
+#endif
+#ifndef REPRO_SCL_GPIO
+#define REPRO_SCL_GPIO 23      /* XIAO C6 D5 */
+#endif
+#define I2C_SDA_GPIO   REPRO_SDA_GPIO
+#define I2C_SCL_GPIO   REPRO_SCL_GPIO
 /* Bus speed is an EXPERIMENTAL VARIABLE. The field ran 100 kHz during the
  * frequent-failure period (4-5 stalls/day); it was dropped to 50 kHz on
  * 2026-08-21 as part of the same bundle that added external pull-ups and
@@ -220,6 +259,7 @@ static void wifi_start(void)
 #ifndef REPRO_INTERNAL_PULLUP
 #define REPRO_INTERNAL_PULLUP 0
 #endif
+static i2c_master_bus_handle_t s_bus;
 static i2c_master_dev_handle_t s_dev;
 static volatile uint64_t s_i2c_ok;    /* transactions completed */
 static volatile uint64_t s_i2c_err;   /* transactions failed */
@@ -235,7 +275,6 @@ static const char *TAG = "repro";
 #define NVS_NS "repro"
 static uint32_t s_boot_count, s_total_backsteps;
 static int64_t  s_worst_back_us_persist;
-
 static void persist_load(void)
 {
     nvs_handle_t h;
@@ -289,6 +328,13 @@ static void persist_backstep(int64_t back_us, int64_t deficit_ms, uint64_t tx)
 #define SYSTIMER_U1_VAL_HI   (*(volatile uint32_t *)(SYSTIMER_BASE + 0x48))
 #define SYSTIMER_U1_VAL_LO   (*(volatile uint32_t *)(SYSTIMER_BASE + 0x4C))
 
+/* Load registers: the value a unit takes when its LOAD bit is triggered. Only
+ * the low 20 bits of HI exist (52-bit counter). */
+#define SYSTIMER_U0_LOAD_HI  (*(volatile uint32_t *)(SYSTIMER_BASE + 0x0C))
+#define SYSTIMER_U0_LOAD_LO  (*(volatile uint32_t *)(SYSTIMER_BASE + 0x10))
+#define SYSTIMER_U1_LOAD_HI  (*(volatile uint32_t *)(SYSTIMER_BASE + 0x14))
+#define SYSTIMER_U1_LOAD_LO  (*(volatile uint32_t *)(SYSTIMER_BASE + 0x18))
+
 static inline uint64_t unit0_raw(void)
 {
     uint32_t hi = SYSTIMER_U0_VAL_HI, lo = SYSTIMER_U0_VAL_LO;
@@ -299,6 +345,85 @@ static inline uint64_t unit1_raw(void)
     uint32_t hi = SYSTIMER_U1_VAL_HI, lo = SYSTIMER_U1_VAL_LO;
     return ((uint64_t)hi << 32) | lo;
 }
+static inline uint64_t load0_raw(void)
+{
+    return ((uint64_t)(SYSTIMER_U0_LOAD_HI & 0xFFFFF) << 32) | SYSTIMER_U0_LOAD_LO;
+}
+static inline uint64_t load1_raw(void)
+{
+    return ((uint64_t)(SYSTIMER_U1_LOAD_HI & 0xFFFFF) << 32) | SYSTIMER_U1_LOAD_LO;
+}
+
+/* ---- Load-register canary (REPRO_LOAD_CANARY=1) ----------------------------
+ * Requested by Espressif on #19036 (2026-11-04). Every raw capture so far shows
+ * one whole bit group of UNIT0 zeroed, [26..35] or [36..51], and the UNIT0
+ * load registers read 0. So the group was either reset, or spuriously LOADED
+ * from those registers. Writing a recognisable pattern into the load registers
+ * at boot tells the two apart: after an event the cleared group holds the
+ * canary's bits (spurious load) or zeros (reset). The LOAD trigger is never
+ * written, so the counter itself is not touched. Equivalent to
+ * systimer_ll_set_counter_value(&SYSTIMER, 0, REPRO_CANARY). */
+#ifndef REPRO_LOAD_CANARY
+#define REPRO_LOAD_CANARY 1
+#endif
+#define REPRO_CANARY ((0x5A5A5ULL << 32) | 0xA5A5A5A5ULL)
+#define GRP_LO(v) ((uint32_t)(((v) >> 26) & 0x3FF))     /* bits 26..35 */
+#define GRP_HI(v) ((uint32_t)(((v) >> 36) & 0xFFFF))    /* bits 36..51 */
+
+static void load_canary_arm(void)
+{
+#if REPRO_LOAD_CANARY
+    SYSTIMER_U0_LOAD_HI = (uint32_t)(REPRO_CANARY >> 32);
+    SYSTIMER_U0_LOAD_LO = (uint32_t)REPRO_CANARY;
+    ESP_LOGW(TAG, "LOAD CANARY: UNIT0 load regs = 0x%013llx (readback 0x%013llx); "
+                      "group bits [26..35]=0x%03" PRIx32 " [36..51]=0x%04" PRIx32,
+             (unsigned long long)REPRO_CANARY, (unsigned long long)load0_raw(),
+             GRP_LO(REPRO_CANARY), GRP_HI(REPRO_CANARY));
+#endif
+}
+
+/* Raw capture for every backstep report: both counters, both load registers,
+ * and each counter's two bit groups next to the canary's, so a reader can see
+ * at a glance whether a cleared group holds zeros or the canary. Persisted to
+ * NVS (replayed on the next boot banner) because with modem sleep on the IWDT
+ * panic can follow the step before the console drains. Several reporters see
+ * the same event; only the first within 1 s of tick time is persisted. */
+static uint32_t s_raw_saved_tick;
+static bool s_raw_saved;
+
+static void report_raw(void)
+{
+    uint64_t u0 = unit0_raw(), u1 = unit1_raw(), l0 = load0_raw(), l1 = load1_raw();
+    uint32_t tick = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    ESP_LOGE(TAG, "    RAW UNIT0=0x%013llx UNIT1=0x%013llx LOAD0=0x%013llx LOAD1=0x%013llx",
+             (unsigned long long)u0, (unsigned long long)u1,
+             (unsigned long long)l0, (unsigned long long)l1);
+    ESP_LOGE(TAG, "    groups [26..35] UNIT0=0x%03" PRIx32 " UNIT1=0x%03" PRIx32 " canary=0x%03" PRIx32
+                  " | [36..51] UNIT0=0x%04" PRIx32 " UNIT1=0x%04" PRIx32 " canary=0x%04" PRIx32 "%s",
+             GRP_LO(u0), GRP_LO(u1), GRP_LO(REPRO_CANARY),
+             GRP_HI(u0), GRP_HI(u1), GRP_HI(REPRO_CANARY),
+             (REPRO_LOAD_CANARY && l0 != REPRO_CANARY) ? "  ** LOAD0 != canary: overwritten **" : "");
+    if (s_raw_saved && tick - s_raw_saved_tick < 1000) return;
+    s_raw_saved = true;
+    s_raw_saved_tick = tick;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u64(h, "raw_u0", u0);
+    nvs_set_u64(h, "raw_u1", u1);
+    nvs_set_u64(h, "raw_l0", l0);
+    nvs_set_u64(h, "raw_l1", l1);
+    nvs_set_u32(h, "raw_tick", tick);
+    nvs_set_u32(h, "raw_boot", s_boot_count);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+/* Phase names for phase-resolved backstep reports. Shared by every peripheral
+ * mode (and read back from NVS in app_main), so they live outside any mode
+ * guard. PING is the ultrasonic trigger->echo window. */
+static const char *const PHASE_NAME[] = {"XFER", "INTER_XFER", "IDLE", "IDLE_WAKE", "PING"};
+enum { PH_XFER = 0, PH_INTER = 1, PH_IDLE = 2, PH_WAKE = 3, PH_PING = 4 };
+#define PH_COUNT 5
 
 #if REPRO_I2C
 
@@ -321,8 +446,6 @@ static inline uint64_t unit1_raw(void)
  * the task 10x/s and alter exactly the idle behaviour under test. We trade
  * resolution *within* idle for fidelity, and still answer active-vs-idle.
  */
-static const char *const PHASE_NAME[] = {"XFER", "INTER_XFER", "IDLE", "IDLE_WAKE"};
-enum { PH_XFER = 0, PH_INTER = 1, PH_IDLE = 2, PH_WAKE = 3 };
 
 static uint32_t s_phase_events;
 
@@ -342,6 +465,7 @@ static void report_phase_backstep(int64_t before_us, int64_t after_us,
              (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS),
              (unsigned long long)unit0_raw(), (unsigned long long)unit1_raw(),
              (uint32_t)SYSTIMER_CONF);
+    report_raw();
     /* Persist IMMEDIATELY: the 08-26 event panicked before the monitor task
      * could record anything, so nothing reached NVS. */
     persist_phase(kind, idx, back, s_i2c_ok);
@@ -382,7 +506,34 @@ static esp_err_t vl_rblock(uint16_t reg, uint8_t *buf, size_t len) {
 static void range_sanity_check(void) {
 #define RK(x) do{ if((x)!=ESP_OK){ ESP_LOGW(TAG,"RANGE: I2C fail @%d",__LINE__); return; } }while(0)
     uint16_t mid=0; RK(vl_r16(0x010F,&mid));
-    if (mid != 0xEACC) { ESP_LOGW(TAG,"RANGE: unexpected model id 0x%04X (skip)",mid); return; }
+    if (mid != 0xEACC) {
+        /* Not a VL53L1X. A VL53L0X also sits at 0x29 but uses 8-bit register
+         * addresses; its ID register 0xC0 reads 0xEE. */
+        uint8_t r = 0xC0, id8 = 0;
+        esp_err_t e = i2c_master_transmit_receive(s_dev, &r, 1, &id8, 1, I2C_TIMEOUT_MS);
+        ESP_LOGW(TAG,"RANGE: unexpected model id 0x%04X; 8-bit reg 0xC0 = 0x%02X (%s)%s (skip)",
+                 mid, id8, esp_err_to_name(e), id8 == 0xEE ? " -> looks like a VL53L0X" : "");
+        /* Nothing lives at 0x30. If it ACKs too, SDA is held low (every bit
+         * reads as ACK / 0), i.e. a wiring or power fault, not a sensor ID. */
+        ESP_LOGW(TAG,"RANGE: probe of empty address 0x30: %s",
+                 esp_err_to_name(i2c_master_probe(s_bus, 0x30, I2C_TIMEOUT_MS)));
+        char found[200] = ""; size_t o = 0;
+        for (uint16_t a = 0x08; a < 0x78; a++)
+            if (i2c_master_probe(s_bus, a, I2C_TIMEOUT_MS) == ESP_OK)
+                o += snprintf(found + o, sizeof(found) - o, " 0x%02X", a);
+        ESP_LOGW(TAG,"RANGE: bus scan:%s", o ? found : " (none)");
+        /* raw ID-ish registers: 16-bit addressed (VL53L1X/VL6180X), 8-bit addressed */
+        uint8_t b[4] = {0};
+        vl_rblock(0x0000, b, 4);
+        uint8_t id16[2] = {0}; vl_rblock(0x010F, id16, 2);
+        uint8_t r8[3] = {0x00, 0x12, 0x92}, v8[3] = {0};
+        for (int i = 0; i < 3; i++)
+            i2c_master_transmit_receive(s_dev, &r8[i], 1, &v8[i], 1, I2C_TIMEOUT_MS);
+        ESP_LOGW(TAG,"RANGE: reg16[0x0000..3]=%02X %02X %02X %02X reg16[0x010F]=%02X%02X "
+                     "reg8[0x00]=%02X reg8[0x12]=%02X reg8[0x92]=%02X",
+                 b[0], b[1], b[2], b[3], id16[0], id16[1], v8[0], v8[1], v8[2]);
+        return;
+    }
     RK(vl_w8(0x0000,0x00)); esp_rom_delay_us(100);
     RK(vl_w8(0x0000,0x01)); vTaskDelay(pdMS_TO_TICKS(1));
     uint32_t t0=(uint32_t)(xTaskGetTickCount()*portTICK_PERIOD_MS); uint8_t st=0;
@@ -502,6 +653,178 @@ static void i2c_task(void *arg)
 }
 #endif
 
+/* ---- Ultrasonic load (REPRO_ULTRASONIC=1) ------------------------------------
+ * Replaces the I2C load with an RCWL-1601 / HC-SR04-style trig/echo sensor, to
+ * test whether the backstep needs I2C at all or any radio + peripheral activity
+ * will do (a third-party report reproduced it with RMT + ADC and no I2C).
+ * Build with I2C off:  idf.py -DREPRO_I2C=0 -DREPRO_ULTRASONIC=1 build
+ *
+ * The echo pulse is measured by the RMT peripheral in hardware (1 us
+ * resolution), NOT by timestamping edges with esp_timer, so a backstep cannot
+ * corrupt the distance. The trigger uses esp_rom_delay_us (CPU cycle counter)
+ * and every wait uses the FreeRTOS tick (SYSTIMER UNIT1, unaffected). The only
+ * esp_timer reads are the backstep checks themselves.
+ *
+ * Wiring (XIAO ESP32-C6): TRIG = D6 (GPIO16), ECHO = D7 (GPIO17), sensor on
+ * 3V3. D6/D7 are UART0 TX/RX; free because the console is USB-Serial-JTAG. The
+ * ROM prints its boot banner on GPIO16, so expect a few junk pings at power-up.
+ * A 5 V-only HC-SR04 needs a divider on ECHO; the RCWL-1601 runs at 3.3 V. */
+#ifndef REPRO_ULTRASONIC
+#define REPRO_ULTRASONIC 0
+#endif
+#if REPRO_ULTRASONIC && REPRO_I2C
+#error "REPRO_ULTRASONIC replaces the I2C load: build with -DREPRO_I2C=0"
+#endif
+#if REPRO_ULTRASONIC
+#include "driver/gpio.h"
+#include "driver/rmt_rx.h"
+#include "esp_rom_sys.h"
+#include "freertos/queue.h"
+#ifndef REPRO_US_TRIG_GPIO
+#define REPRO_US_TRIG_GPIO 16          /* XIAO C6 D6 */
+#endif
+#ifndef REPRO_US_ECHO_GPIO
+#define REPRO_US_ECHO_GPIO 17          /* XIAO C6 D7 */
+#endif
+/* Ping cadence. Default 1 Hz mirrors the field sensor's 1 s update, so the
+ * peripheral sees the same active-then-idle duty the I2C runs used. */
+#ifndef REPRO_US_PERIOD_MS
+#define REPRO_US_PERIOD_MS 1000
+#endif
+#ifndef REPRO_IDLE_CHUNK_MS
+#define REPRO_IDLE_CHUNK_MS 50
+#endif
+#define US_ECHO_TIMEOUT_MS 80          /* no edge within this -> "no echo" */
+#define US_MAX_ECHO_US     26000       /* ~4.5 m; longer = nothing in range */
+
+static volatile uint64_t s_us_ok;      /* valid echoes */
+static volatile uint64_t s_us_err;     /* no echo at all (wiring/sensor fault) */
+static volatile uint64_t s_us_far;     /* echo, but nothing in range */
+static volatile uint32_t s_us_last_mm;
+static rmt_channel_handle_t s_us_rx;
+static QueueHandle_t s_us_q;
+static rmt_symbol_word_t s_us_sym[64];
+
+static bool IRAM_ATTR us_rx_done(rmt_channel_handle_t ch,
+                                 const rmt_rx_done_event_data_t *ed, void *ctx)
+{
+    BaseType_t woken = pdFALSE;
+    xQueueSendFromISR(s_us_q, ed, &woken);
+    return woken == pdTRUE;
+}
+
+static void us_report_backstep(int64_t before_us, int64_t after_us, int kind, int idx)
+{
+    int64_t back = after_us - before_us;           /* negative */
+    ESP_LOGE(TAG, "*** BACKSTEP DURING %s (idx %d) ***", PHASE_NAME[kind], idx);
+    ESP_LOGE(TAG, "    esp_timer %lld -> %lld us  (moved %lld us = %.2f min)",
+             (long long)before_us, (long long)after_us, (long long)back,
+             (double)back / 60000000.0);
+    ESP_LOGE(TAG, "    US SEQ: ok=%llu err=%llu far=%llu last=%" PRIu32 " mm",
+             (unsigned long long)s_us_ok, (unsigned long long)s_us_err,
+             (unsigned long long)s_us_far, s_us_last_mm);
+    ESP_LOGE(TAG, "    tick=%" PRIu32 " ms  UNIT0=%llu UNIT1=%llu  CONF=0x%08" PRIx32,
+             (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS),
+             (unsigned long long)unit0_raw(), (unsigned long long)unit1_raw(),
+             (uint32_t)SYSTIMER_CONF);
+    report_raw();
+    persist_phase(kind, idx, back, s_us_ok);
+}
+
+static void us_init(void)
+{
+    gpio_reset_pin(REPRO_US_TRIG_GPIO);            /* detach UART0 TX */
+    gpio_config_t io = {
+        .pin_bit_mask = 1ULL << REPRO_US_TRIG_GPIO,
+        .mode = GPIO_MODE_OUTPUT,
+    };
+    ESP_ERROR_CHECK(gpio_config(&io));
+    gpio_set_level(REPRO_US_TRIG_GPIO, 0);
+
+    rmt_rx_channel_config_t rx = {
+        .gpio_num = REPRO_US_ECHO_GPIO,
+        .clk_src = RMT_CLK_SRC_DEFAULT,
+        .resolution_hz = 1000000,                  /* 1 tick = 1 us */
+        .mem_block_symbols = 48,
+    };
+    ESP_ERROR_CHECK(rmt_new_rx_channel(&rx, &s_us_rx));
+    s_us_q = xQueueCreate(1, sizeof(rmt_rx_done_event_data_t));
+    rmt_rx_event_callbacks_t cbs = { .on_recv_done = us_rx_done };
+    ESP_ERROR_CHECK(rmt_rx_register_event_callbacks(s_us_rx, &cbs, NULL));
+    ESP_ERROR_CHECK(rmt_enable(s_us_rx));
+}
+
+/* One ping. Returns echo width in us, 0 = no echo (timed out). */
+static uint32_t us_ping(void)
+{
+    const rmt_receive_config_t rc = {
+        .signal_range_min_ns = 1000,               /* drop glitches < 1 us */
+        .signal_range_max_ns = 30 * 1000 * 1000,   /* frame ends after 30 ms flat */
+    };
+    xQueueReset(s_us_q);
+    if (rmt_receive(s_us_rx, s_us_sym, sizeof(s_us_sym), &rc) != ESP_OK)
+        return 0;
+    gpio_set_level(REPRO_US_TRIG_GPIO, 1);
+    esp_rom_delay_us(10);
+    gpio_set_level(REPRO_US_TRIG_GPIO, 0);
+
+    rmt_rx_done_event_data_t ev;
+    if (xQueueReceive(s_us_q, &ev, pdMS_TO_TICKS(US_ECHO_TIMEOUT_MS)) != pdTRUE) {
+        rmt_disable(s_us_rx);                      /* abandon the pending receive */
+        rmt_enable(s_us_rx);
+        return 0;
+    }
+    /* First high segment = echo width. */
+    for (size_t i = 0; i < ev.num_symbols; i++) {
+        const rmt_symbol_word_t *w = &ev.received_symbols[i];
+        if (w->level0 == 1 && w->duration0) return w->duration0;
+        if (w->level1 == 1 && w->duration1) return w->duration1;
+    }
+    return 0;
+}
+
+static void us_task(void *arg)
+{
+    int64_t t_prev = esp_timer_get_time();
+    uint32_t logged = 0;
+    for (;;) {
+        int64_t t_pre = esp_timer_get_time();
+        if (t_pre < t_prev) us_report_backstep(t_prev, t_pre, PH_WAKE, 0);
+
+        uint32_t w = us_ping();
+
+        int64_t t_post = esp_timer_get_time();
+        if (t_post < t_pre) us_report_backstep(t_pre, t_post, PH_PING, 0);
+
+        if (w == 0) {
+            if ((s_us_err++ % 100) == 0)
+                ESP_LOGW(TAG, "ultrasonic: no echo (total %llu) -- check wiring/power",
+                         (unsigned long long)s_us_err);
+        } else if (w >= US_MAX_ECHO_US) {
+            s_us_far++;
+        } else {
+            s_us_ok++;
+            s_us_last_mm = (w * 1715U) / 10000U;   /* 343 m/s, round trip */
+        }
+        if (logged < 5) {                          /* prove the sensor works */
+            logged++;
+            ESP_LOGW(TAG, "ultrasonic ping %" PRIu32 ": echo %" PRIu32 " us -> %" PRIu32 " mm",
+                     logged, w, w ? (w * 1715U) / 10000U : 0);
+        }
+
+        /* Idle in chunks so a step inside the idle window is caught promptly. */
+        int64_t t_idle = t_post;
+        for (int k = 0; k < (REPRO_US_PERIOD_MS / REPRO_IDLE_CHUNK_MS); k++) {
+            vTaskDelay(pdMS_TO_TICKS(REPRO_IDLE_CHUNK_MS));
+            int64_t t_now = esp_timer_get_time();
+            if (t_now < t_idle) us_report_backstep(t_idle, t_now, PH_IDLE, k);
+            t_idle = t_now;
+        }
+        t_prev = t_idle;
+    }
+}
+#endif
+
 static void monitor_task(void *arg)
 {
     const uint32_t period_ms = 250;
@@ -518,6 +841,9 @@ static void monitor_task(void *arg)
     ESP_LOGI(TAG, "duty pattern: %d transfers per burst, %d ms idle between "
                   "(field-like; hammering may SUPPRESS an idle->active trigger)",
              REPRO_BURST, REPRO_IDLE_MS);
+#elif REPRO_ULTRASONIC
+    ESP_LOGI(TAG, "monitoring. SYSTIMER_CONF=0x%08" PRIx32 "  I2C OFF, ULTRASONIC trig=GPIO%d echo=GPIO%d, ping every %d ms (RMT-timed)",
+             (uint32_t)SYSTIMER_CONF, REPRO_US_TRIG_GPIO, REPRO_US_ECHO_GPIO, REPRO_US_PERIOD_MS);
 #else
     ESP_LOGI(TAG, "monitoring. SYSTIMER_CONF=0x%08" PRIx32 "  I2C DISABLED (control build)",
              (uint32_t)SYSTIMER_CONF);
@@ -543,10 +869,13 @@ static void monitor_task(void *arg)
                      (unsigned long long)unit0_raw(), (unsigned long long)unit1_raw());
             ESP_LOGE(TAG, "    SYSTIMER_CONF=0x%08" PRIx32 "  (compare against boot value)",
                      (uint32_t)SYSTIMER_CONF);
+            report_raw();
             ESP_LOGE(TAG, "    event #%" PRIu32 ", worst so far %lld us", events, (long long)worst_back_us);
             persist_backstep(d_esp_us, (int64_t)tick_ms - esp_us / 1000,
 #if REPRO_I2C
                              s_i2c_ok);
+#elif REPRO_ULTRASONIC
+                             s_us_ok);
 #else
                              0);
 #endif
@@ -576,6 +905,16 @@ static void monitor_task(void *arg)
         static uint32_t n;
         if (++n % (60000 / period_ms) == 0) {
             int64_t esp_ms = esp_us / 1000;
+#if REPRO_LOAD_CANARY
+            /* A run whose canary got overwritten can't answer the question:
+             * say so loudly (once) rather than let a later event mislead. */
+            static bool canary_lost;
+            if (!canary_lost && load0_raw() != REPRO_CANARY) {
+                canary_lost = true;
+                ESP_LOGE(TAG, "LOAD CANARY OVERWRITTEN: UNIT0 load regs now 0x%013llx",
+                         (unsigned long long)load0_raw());
+            }
+#endif
 #if REPRO_I2C
             ESP_LOGI(TAG, "esp_timer %lld ms | tick %" PRIu32 " ms | deficit %lld ms | backsteps %"
                           PRIu32 " | i2c ok=%llu err=%llu (%.0f tx/s)",
@@ -587,6 +926,17 @@ static void monitor_task(void *arg)
             /* WiFi is THE VARIABLE UNDER TEST. Without this line a null result
              * after days of running would be uninterpretable -- we could not
              * tell "WiFi up, no stall" from "WiFi silently dropped". */
+            ESP_LOGI(TAG, "  wifi %s | disconnects %" PRIu32 " | ps=%s",
+                     s_wifi_up ? "UP" : "DOWN", s_wifi_disconnects,
+                     REPRO_MODEM_SLEEP ? "MIN_MODEM" : "NONE");
+#endif
+#elif REPRO_ULTRASONIC
+            ESP_LOGI(TAG, "esp_timer %lld ms | tick %" PRIu32 " ms | deficit %lld ms | backsteps %"
+                          PRIu32 " | us ok=%llu err=%llu far=%llu last=%" PRIu32 " mm",
+                     (long long)esp_ms, tick_ms, (long long)((int64_t)tick_ms - esp_ms), events,
+                     (unsigned long long)s_us_ok, (unsigned long long)s_us_err,
+                     (unsigned long long)s_us_far, s_us_last_mm);
+#if REPRO_WIFI
             ESP_LOGI(TAG, "  wifi %s | disconnects %" PRIu32 " | ps=%s",
                      s_wifi_up ? "UP" : "DOWN", s_wifi_disconnects,
                      REPRO_MODEM_SLEEP ? "MIN_MODEM" : "NONE");
@@ -624,6 +974,9 @@ void app_main(void)
         ESP_LOGW(TAG, "TIMEWARP: high-bit observation window ~38 h until natural carry; UNIT1-UNIT0 baseline is now -(preset)");
     }
 #endif
+    /* After the preset: esp_timer_private_set() goes through the same load
+     * registers and would overwrite the canary. */
+    load_canary_arm();
 #if REPRO_WIFI
     wifi_start();
 #endif
@@ -636,13 +989,21 @@ void app_main(void)
             int32_t k = -1, ix = -1; int64_t bk = 0; uint64_t tx = 0;
             nvs_get_i32(h, "ph_kind", &k); nvs_get_i32(h, "ph_idx", &ix);
             nvs_get_i64(h, "ph_back", &bk); nvs_get_u64(h, "ph_tx", &tx);
-            if (k >= 0 && k <= 3)
+            if (k >= 0 && k < PH_COUNT)
                 ESP_LOGW(TAG, "LAST BACKSTEP PHASE: %s idx=%" PRId32
                               " back=%lld us at tx #%llu",
                          PHASE_NAME[k], ix, (long long)bk,
                          (unsigned long long)tx);
             else
                 ESP_LOGW(TAG, "no phase-resolved backstep recorded yet");
+            uint64_t u0, u1, l0, l1; uint32_t rt, rb;
+            if (nvs_get_u64(h, "raw_u0", &u0) == ESP_OK && nvs_get_u64(h, "raw_u1", &u1) == ESP_OK &&
+                nvs_get_u64(h, "raw_l0", &l0) == ESP_OK && nvs_get_u64(h, "raw_l1", &l1) == ESP_OK &&
+                nvs_get_u32(h, "raw_tick", &rt) == ESP_OK && nvs_get_u32(h, "raw_boot", &rb) == ESP_OK)
+                ESP_LOGW(TAG, "LAST RAW CAPTURE (boot #%" PRIu32 ", tick %" PRIu32 " ms): UNIT0=0x%013llx "
+                              "UNIT1=0x%013llx LOAD0=0x%013llx LOAD1=0x%013llx",
+                         rb, rt, (unsigned long long)u0, (unsigned long long)u1,
+                         (unsigned long long)l0, (unsigned long long)l1);
             nvs_close(h);
         }
     }
@@ -660,17 +1021,20 @@ void app_main(void)
         .glitch_ignore_cnt = 7,
         .flags.enable_internal_pullup = REPRO_INTERNAL_PULLUP ? true : false,
     };
-    i2c_master_bus_handle_t bus;
-    ESP_ERROR_CHECK(i2c_new_master_bus(&bus_cfg, &bus));
+    ESP_ERROR_CHECK(i2c_new_master_bus(&bus_cfg, &s_bus));
 
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = I2C_ADDR,
         .scl_speed_hz = I2C_HZ,
     };
-    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus, &dev_cfg, &s_dev));
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(s_bus, &dev_cfg, &s_dev));
 
     xTaskCreate(i2c_task, "i2c", 4096, NULL, 5, NULL);
+#endif
+#if REPRO_ULTRASONIC
+    us_init();
+    xTaskCreate(us_task, "us", 4096, NULL, 5, NULL);
 #endif
     xTaskCreate(monitor_task, "monitor", 4096, NULL, 4, NULL);
 }

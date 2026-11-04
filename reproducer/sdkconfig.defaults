@@ -10,3 +10,4 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 # chip silently when openocd is not attached, and hides the backtrace when it is.
 CONFIG_ESP_DEBUG_OCDAWARE=n
 CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

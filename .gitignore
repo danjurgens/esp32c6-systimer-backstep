@@ -1,0 +1,8 @@
+# never publish credentials
+reproducer/main/repro_secrets.h
+# build outputs
+reproducer/build/
+reproducer/sdkconfig
+reproducer/sdkconfig.old
+reproducer/build-*/
+__pycache__/
