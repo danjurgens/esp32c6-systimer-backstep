@@ -38,6 +38,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_private/esp_timer_private.h"
+#include "esp_system.h"
 
 /* ---- WiFi (REPRO_WIFI=1) --------------------------------------------------
  * THE VARIABLE UNDER TEST. Bare-IDF + I2C alone ran 20.43 h / 220,476
@@ -275,6 +276,34 @@ static const char *TAG = "repro";
 #define NVS_NS "repro"
 static uint32_t s_boot_count, s_total_backsteps;
 static int64_t  s_worst_back_us_persist;
+/* Why the previous boot ended and how long it had run (tick time, saved every
+ * 10 min). An unexplained reboot on 2026-11-04 couldn't be classified because
+ * the reason was only ever printed in a banner nobody was reading. */
+#define UPTIME_SAVE_MIN 10
+static uint32_t s_prev_up_min;
+
+static const char *reset_reason_name(esp_reset_reason_t r)
+{
+    switch (r) {
+    case ESP_RST_POWERON:   return "POWERON";
+    case ESP_RST_EXT:       return "EXT";
+    case ESP_RST_SW:        return "SW";
+    case ESP_RST_PANIC:     return "PANIC";
+    case ESP_RST_INT_WDT:   return "INT_WDT";
+    case ESP_RST_TASK_WDT:  return "TASK_WDT";
+    case ESP_RST_WDT:       return "WDT";
+    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT:  return "BROWNOUT";
+    case ESP_RST_SDIO:      return "SDIO";
+    case ESP_RST_USB:       return "USB";
+    case ESP_RST_JTAG:      return "JTAG";
+    case ESP_RST_EFUSE:     return "EFUSE";
+    case ESP_RST_PWR_GLITCH:return "PWR_GLITCH";
+    case ESP_RST_CPU_LOCKUP:return "CPU_LOCKUP";
+    default:                return "UNKNOWN";
+    }
+}
+
 static void persist_load(void)
 {
     nvs_handle_t h;
@@ -282,8 +311,29 @@ static void persist_load(void)
     nvs_get_u32(h, "boots", &s_boot_count);
     nvs_get_u32(h, "backsteps", &s_total_backsteps);
     nvs_get_i64(h, "worst", &s_worst_back_us_persist);
+    nvs_get_u32(h, "up_min", &s_prev_up_min);
     s_boot_count++;
     nvs_set_u32(h, "boots", s_boot_count);
+    nvs_set_u32(h, "up_min", 0);
+    /* reset-reason history: last 8, newest first, "boot#:REASON:upmin" */
+    char hist[200] = "", line[240];
+    size_t hl = sizeof(hist);
+    nvs_get_str(h, "rst_hist", hist, &hl);
+    snprintf(line, sizeof(line), "%" PRIu32 ":%s:%" PRIu32 " %s", s_boot_count,
+             reset_reason_name(esp_reset_reason()), s_prev_up_min, hist);
+    int sp = 0;
+    for (char *p = line; *p; p++)
+        if (*p == ' ' && ++sp == 8) { *p = 0; break; }
+    nvs_set_str(h, "rst_hist", line);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void persist_uptime(uint32_t up_min)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u32(h, "up_min", up_min);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -505,6 +555,11 @@ static esp_err_t vl_rblock(uint16_t reg, uint8_t *buf, size_t len) {
 
 static void range_sanity_check(void) {
 #define RK(x) do{ if((x)!=ESP_OK){ ESP_LOGW(TAG,"RANGE: I2C fail @%d",__LINE__); return; } }while(0)
+    /* Release SOFT_RESET (0x0000) first. A sensor left in soft reset still
+     * ACKs but reads 0x00 everywhere, and only a power cycle clears it
+     * (XSHUT is tied high), so every MCU reset after it got stuck there
+     * looked like a dead sensor. */
+    RK(vl_w8(0x0000,0x01)); vTaskDelay(pdMS_TO_TICKS(2));
     uint16_t mid=0; RK(vl_r16(0x010F,&mid));
     if (mid != 0xEACC) {
         /* Not a VL53L1X. A VL53L0X also sits at 0x29 but uses 8-bit register
@@ -576,8 +631,10 @@ static void range_sanity_check(void) {
     uint32_t mm=((uint32_t)raw*2011+0x0400)/0x0800;
     ESP_LOGW(TAG,"RANGE SANITY: %lu mm (%.2f m), range_status=%u  -- sensor optically OK",
              (unsigned long)mm, mm/1000.0f, rstatus);
-    /* leave the sensor stopped; model-id hammer does not need ranging active */
-    vl_w8(0x0086,0x01); vl_w8(0x0000,0x00);
+    /* Leave the sensor stopped (SYSTEM__MODE_START = 0) but out of reset; the
+     * model-id hammer does not need ranging active. This used to write
+     * SOFT_RESET = 0, which held the sensor in reset until a power cycle. */
+    vl_w8(0x0086,0x01); vl_w8(0x0087,0x00);
 #undef RK
 }
 #endif
@@ -905,6 +962,9 @@ static void monitor_task(void *arg)
         static uint32_t n;
         if (++n % (60000 / period_ms) == 0) {
             int64_t esp_ms = esp_us / 1000;
+            /* tick time, not esp_timer: the uptime has to survive a backstep */
+            if ((tick_ms / 60000U) % UPTIME_SAVE_MIN == 0)
+                persist_uptime(tick_ms / 60000U);
 #if REPRO_LOAD_CANARY
             /* A run whose canary got overwritten can't answer the question:
              * say so loudly (once) rather than let a later event mislead. */
@@ -982,6 +1042,16 @@ void app_main(void)
 #endif
     ESP_LOGW(TAG, "boot #%" PRIu32 " | lifetime backsteps %" PRIu32 " | worst %lld us",
              s_boot_count, s_total_backsteps, (long long)s_worst_back_us_persist);
+    ESP_LOGW(TAG, "reset reason %s | previous boot ran >= %" PRIu32 " min",
+             reset_reason_name(esp_reset_reason()), s_prev_up_min);
+    {
+        nvs_handle_t h; char hist[200] = ""; size_t hl = sizeof(hist);
+        if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+            nvs_get_str(h, "rst_hist", hist, &hl);
+            nvs_close(h);
+        }
+        ESP_LOGW(TAG, "reset history (boot:reason:prev_min, newest first): %s", hist);
+    }
     {   /* Report the phase of the last recorded backstep. Survives the
          * panic-reboot that cost us the 08-26 event's context entirely. */
         nvs_handle_t h;
