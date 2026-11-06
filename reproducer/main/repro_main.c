@@ -425,12 +425,65 @@ static void load_canary_arm(void)
 #if REPRO_LOAD_CANARY
     SYSTIMER_U0_LOAD_HI = (uint32_t)(REPRO_CANARY >> 32);
     SYSTIMER_U0_LOAD_LO = (uint32_t)REPRO_CANARY;
-    ESP_LOGW(TAG, "LOAD CANARY: UNIT0 load regs = 0x%013llx (readback 0x%013llx); "
+    /* No readback: the registers are only read at event time (report_raw). */
+    ESP_LOGW(TAG, "LOAD CANARY: UNIT0 load regs written 0x%013llx; "
                       "group bits [26..35]=0x%03" PRIx32 " [36..51]=0x%04" PRIx32,
-             (unsigned long long)REPRO_CANARY, (unsigned long long)load0_raw(),
+             (unsigned long long)REPRO_CANARY,
              GRP_LO(REPRO_CANARY), GRP_HI(REPRO_CANARY));
 #endif
 }
+
+/* ---- GPTimer witness (REPRO_WITNESS=1) --------------------------------------
+ * A third counter, in a different peripheral (timer group 0), clocked from the
+ * same 40 MHz XTAL as SYSTIMER so the two cannot drift apart. It tells which
+ * SYSTIMER unit moved, catches UNIT1 losses (the FreeRTOS tick just lags, it
+ * never steps back), and catches UNIT0 losses shorter than the 250 ms poll,
+ * which the backward check cannot see. At event time it also predicts what
+ * each unit SHOULD hold, so the XOR against the actual value shows which bits
+ * changed. Reads only TIMG registers; SYSTIMER is touched once at boot for the
+ * baseline and otherwise only at event time, as before. */
+#ifndef REPRO_WITNESS
+#define REPRO_WITNESS 1
+#endif
+#define WITNESS_MS 15   /* above tick quantisation + scheduling jitter */
+#if REPRO_WITNESS
+#include "driver/gptimer.h"
+static gptimer_handle_t s_gpt;
+static uint64_t s_base_gpt_us, s_base_u0, s_base_u1;
+static int64_t  s_base_esp_us;
+static uint32_t s_base_tick_ms;
+static uint32_t s_witness_events;
+
+static inline uint64_t gpt_us(void)
+{
+    uint64_t v = 0;
+    gptimer_get_raw_count(s_gpt, &v);
+    return v;
+}
+
+static void witness_start(void)
+{
+    gptimer_config_t cfg = {
+        .clk_src = GPTIMER_CLK_SRC_XTAL,
+        .direction = GPTIMER_COUNT_UP,
+        .resolution_hz = 1000000,
+    };
+    ESP_ERROR_CHECK(gptimer_new_timer(&cfg, &s_gpt));
+    ESP_ERROR_CHECK(gptimer_enable(s_gpt));
+    ESP_ERROR_CHECK(gptimer_start(s_gpt));
+    /* Right after a tick the latched UNIT1 value is fresh; esp_timer_get_time()
+     * latches UNIT0. Baseline error is then a few us, well below a bit-10 step. */
+    vTaskDelay(1);
+    s_base_esp_us  = esp_timer_get_time();
+    s_base_u0      = unit0_raw();
+    s_base_u1      = unit1_raw();
+    s_base_tick_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    s_base_gpt_us  = gpt_us();
+    ESP_LOGW(TAG, "WITNESS: GPTimer (TIMG, XTAL, 1 MHz) baseline UNIT0=0x%013llx UNIT1=0x%013llx; "
+                  "alerts at >= %d ms disagreement",
+             (unsigned long long)s_base_u0, (unsigned long long)s_base_u1, WITNESS_MS);
+}
+#endif
 
 /* Raw capture for every backstep report: both counters, both load registers,
  * and each counter's two bit groups next to the canary's, so a reader can see
@@ -453,6 +506,17 @@ static void report_raw(void)
              GRP_LO(u0), GRP_LO(u1), GRP_LO(REPRO_CANARY),
              GRP_HI(u0), GRP_HI(u1), GRP_HI(REPRO_CANARY),
              (REPRO_LOAD_CANARY && l0 != REPRO_CANARY) ? "  ** LOAD0 != canary: overwritten **" : "");
+#if REPRO_WITNESS
+    uint64_t g = gpt_us();
+    uint64_t el = (g - s_base_gpt_us) * 16ULL;   /* 16 SYSTIMER ticks per us */
+    uint64_t e0 = s_base_u0 + el, e1 = s_base_u1 + el;
+    /* UNIT1's latched value can be up to 1 ms (16,000 ticks, ~bit 14) stale. */
+    ESP_LOGE(TAG, "    WITNESS GPTimer %llu us | expect UNIT0=0x%013llx (actual %+.3f ms, xor 0x%013llx)"
+                  " | expect UNIT1=0x%013llx (actual %+.3f ms, xor 0x%013llx)",
+             (unsigned long long)g,
+             (unsigned long long)e0, (double)((int64_t)(u0 - e0)) / 16000.0, (unsigned long long)(u0 ^ e0),
+             (unsigned long long)e1, (double)((int64_t)(u1 - e1)) / 16000.0, (unsigned long long)(u1 ^ e1));
+#endif
     if (s_raw_saved && tick - s_raw_saved_tick < 1000) return;
     s_raw_saved = true;
     s_raw_saved_tick = tick;
@@ -464,6 +528,9 @@ static void report_raw(void)
     nvs_set_u64(h, "raw_l1", l1);
     nvs_set_u32(h, "raw_tick", tick);
     nvs_set_u32(h, "raw_boot", s_boot_count);
+#if REPRO_WITNESS
+    nvs_set_u64(h, "raw_gpt", g);
+#endif
     nvs_commit(h);
     nvs_close(h);
 }
@@ -889,6 +956,9 @@ static void monitor_task(void *arg)
     uint32_t prev_tick_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     int64_t  worst_back_us = 0;
     uint32_t events = 0;
+#if REPRO_WITNESS
+    uint64_t prev_gpt_us = gpt_us();
+#endif
 
 #if REPRO_I2C
     ESP_LOGI(TAG, "monitoring. SYSTIMER_CONF=0x%08" PRIx32 "  I2C ACTIVE, period %d ms, pullups=%s",
@@ -909,8 +979,17 @@ static void monitor_task(void *arg)
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(period_ms));
 
+#if REPRO_WITNESS
+        /* Sampled together so a preemption between reads can't fake a lag. */
+        static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+        portENTER_CRITICAL(&mux);
+#endif
         int64_t  esp_us  = esp_timer_get_time();
         uint32_t tick_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+#if REPRO_WITNESS
+        uint64_t g_us    = gpt_us();
+        portEXIT_CRITICAL(&mux);
+#endif
 
         int64_t  d_esp_us  = esp_us - prev_esp_us;
         uint32_t d_tick_ms = tick_ms - prev_tick_ms;
@@ -947,6 +1026,29 @@ static void monitor_task(void *arg)
 #endif
         }
 
+#if REPRO_WITNESS
+        {
+            int64_t d_gpt_us = (int64_t)(g_us - prev_gpt_us);
+            int64_t lost1_ms = d_gpt_us / 1000 - (int64_t)d_tick_ms;
+            int64_t lost0_ms = (d_gpt_us - d_esp_us) / 1000;
+            if (lost1_ms >= WITNESS_MS || lost1_ms <= -WITNESS_MS) {
+                s_witness_events++;
+                ESP_LOGE(TAG, "*** WITNESS: UNIT1 (tick) %s %lld ms: tick +%" PRIu32 " ms, GPTimer +%lld us ***",
+                         lost1_ms > 0 ? "LOST" : "GAINED", (long long)(lost1_ms > 0 ? lost1_ms : -lost1_ms),
+                         d_tick_ms, (long long)d_gpt_us);
+                report_raw();
+            }
+            /* A backward step was reported above; this adds the short and forward cases. */
+            if (d_esp_us >= 0 && (lost0_ms >= WITNESS_MS || lost0_ms <= -WITNESS_MS)) {
+                s_witness_events++;
+                ESP_LOGE(TAG, "*** WITNESS: UNIT0 (esp_timer) %s %lld ms: esp_timer +%lld us, GPTimer +%lld us ***",
+                         lost0_ms > 0 ? "LOST" : "GAINED", (long long)(lost0_ms > 0 ? lost0_ms : -lost0_ms),
+                         (long long)d_esp_us, (long long)d_gpt_us);
+                report_raw();
+            }
+            prev_gpt_us = g_us;
+        }
+#endif
         prev_esp_us  = esp_us;
         prev_tick_ms = tick_ms;
 
@@ -965,15 +1067,17 @@ static void monitor_task(void *arg)
             /* tick time, not esp_timer: the uptime has to survive a backstep */
             if ((tick_ms / 60000U) % UPTIME_SAVE_MIN == 0)
                 persist_uptime(tick_ms / 60000U);
-#if REPRO_LOAD_CANARY
-            /* A run whose canary got overwritten can't answer the question:
-             * say so loudly (once) rather than let a later event mislead. */
-            static bool canary_lost;
-            if (!canary_lost && load0_raw() != REPRO_CANARY) {
-                canary_lost = true;
-                ESP_LOGE(TAG, "LOAD CANARY OVERWRITTEN: UNIT0 load regs now 0x%013llx",
-                         (unsigned long long)load0_raw());
-            }
+            /* The LOAD canary is deliberately NOT polled here: by inspection
+             * nothing writes those registers after boot, and every extra
+             * SYSTIMER access is a perturbation. report_raw() reads it at
+             * event time and flags an overwrite then. */
+#if REPRO_WITNESS
+            /* Cumulative since the baseline; both should sit near 0 ms. */
+            ESP_LOGI(TAG, "  witness GPTimer %llu ms | UNIT0-gpt %+lld ms | UNIT1-gpt %+lld ms | witness events %" PRIu32,
+                     (unsigned long long)(g_us / 1000),
+                     (long long)(((esp_us - s_base_esp_us) - (int64_t)(g_us - s_base_gpt_us)) / 1000),
+                     (long long)((int64_t)(tick_ms - s_base_tick_ms) - (int64_t)(g_us - s_base_gpt_us) / 1000),
+                     s_witness_events);
 #endif
 #if REPRO_I2C
             ESP_LOGI(TAG, "esp_timer %lld ms | tick %" PRIu32 " ms | deficit %lld ms | backsteps %"
@@ -1037,6 +1141,10 @@ void app_main(void)
     /* After the preset: esp_timer_private_set() goes through the same load
      * registers and would overwrite the canary. */
     load_canary_arm();
+#if REPRO_WITNESS
+    /* Before any task that can call report_raw(). */
+    witness_start();
+#endif
 #if REPRO_WIFI
     wifi_start();
 #endif
