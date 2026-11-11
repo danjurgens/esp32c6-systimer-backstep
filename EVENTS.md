@@ -68,3 +68,36 @@ Bit-verified total: 36 (24 TB + 12 GA). 35/36 crossings: still 0.
 - **Grand total faults across both boards: ~45 (45)**
 - **35/36 crossings: 0** (2 apparent crossings during the 09-05 audit were artifacts: one my cumulative-deficit decomposition bug, one a leaked synthetic alert-test injection)
 - Quarantined (physical transient, 09-04 near-spill): 10 (excluded)
+
+## Boards and event rates
+
+All three of our boards are ESP32-C6 v0.2. MACs are kept out of this repo, so
+the boards are labelled here.
+
+| label | board | role | conditions | observed rate |
+|--|--|--|--|--|
+| **XIAO-T** | Seeed XIAO ESP32-C6 (C6FH4, QFN32) | testbed: bare ESP-IDF reproducer (the TB-xx events above) | Wi-Fi STA + VL53L1X I2C bursts. PS_NONE and MIN_MODEM both used; events under both | **~7 h/event** (8 events in ~59 h of Wi-Fi runtime, REPORT.md); 0 in 55.7 h with Wi-Fi off |
+| **XIAO-G** | Seeed XIAO ESP32-C6 (C6FH4, QFN32) | garage production node: ESPHome + clock_guard (the GA-xx events above) | Wi-Fi PS_NONE, VL53L1X on I2C | **~21 h/event**: 25 clock_guard corrections from 2026-08-27 to 09-18, and 2 more before it was retired around 09-19 |
+| **DevKit** | Espressif ESP32-C6-DevKitC-1 (QFN40) | replaced XIAO-G in the garage | same reproducer on GPIO 6/7 | 0 events in ~5 days (2026-09-17 to 09-22) |
+
+XIAO-G came off the garage breadboard and is the board in the November canary
+run below. XIAO-T has the established ~7 h rate and isn't running right now.
+
+## Canary run, November 2026 (XIAO-G, bare ESP-IDF reproducer)
+
+Build: IDF v5.5.5. `REPRO_WIFI=1`, `REPRO_MODEM_SLEEP=0` (PS_NONE), I2C at 100 kHz in bursts of 3/s with 1000 ms idle
+and `REPRO_LOAD_CANARY=1`. Internal pull-ups from boot #21; the GPTimer witness (`REPRO_WITNESS=1`) from boot #26.
+
+Monitored runtime: **156.5 h** over four boots (6.0 h, 27.1 h, 1.5 h, and 121.9 h at 2026-11-10 22:30, still
+running). UNIT1 losses of 15 ms or more were detectable throughout via the heartbeat deficit, and directly by the
+witness from boot #26.
+
+| # | when | unit | magnitude | detail |
+|--|--|--|--|--|
+| CN-01 | 2026-11-05, boot #23, 25.7 h | UNIT0 | 37.40 min (-2243.90 s) | Cleared bits {35, 30, 28, 27, 26}. The cleared group reads 0x000, not the canary's 0x169, and LOAD0 still holds the canary, so this was a clear, not a spurious load. Happened in the I2C idle gap with no transfer in flight. UNIT1 unaffected. |
+| CN-02 | 2026-11-07, boot #26, 45.2 h | UNIT1 | ~35.7 ms | Witness: tick +250 ms against GPTimer +285.3 ms. UNIT0 stayed within 1 ms of the GPTimer; canary intact. The 250 ms poll can't tell a stall from a clear of low bits. |
+
+That's **1 UNIT0 event in 156.5 h**. At XIAO-G's production rate (~21 h) about 7 were expected, and seeing 1 or
+fewer has a probability of roughly 0.5%. Possible contributors include the instrumentation (the canary in the
+load registers, and the witness's 250 ms critical-section sample) and run-to-run variation. Running the same build
+on XIAO-T would separate the instrumentation from the board.
