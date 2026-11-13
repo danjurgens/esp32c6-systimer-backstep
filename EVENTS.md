@@ -101,3 +101,7 @@ That's **1 UNIT0 event in 156.5 h**. At XIAO-G's production rate (~21 h) about 7
 fewer has a probability of roughly 0.5%. Possible contributors include the instrumentation (the canary in the
 load registers, and the witness's 250 ms critical-section sample) and run-to-run variation. Running the same build
 on XIAO-T would separate the instrumentation from the board.
+
+As of 2026-11-13 the run is at 183 h and nothing has happened since CN-02. A board that can stay clean that long
+can't provide a negative result, so a clean window on XIAO-G (for example after an A/B change) isn't evidence.
+Only events from it count. A/B tests need a board that fails reliably.
