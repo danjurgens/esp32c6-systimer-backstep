@@ -96,12 +96,13 @@ witness from boot #26.
 |--|--|--|--|--|
 | CN-01 | 2026-11-05, boot #23, 25.7 h | UNIT0 | 37.40 min (-2243.90 s) | Cleared bits {35, 30, 28, 27, 26}. The cleared group reads 0x000, not the canary's 0x169, and LOAD0 still holds the canary, so this was a clear, not a spurious load. Happened in the I2C idle gap with no transfer in flight. UNIT1 unaffected. |
 | CN-02 | 2026-11-07, boot #26, 45.2 h | UNIT1 | ~35.7 ms | Witness: tick +250 ms against GPTimer +285.3 ms. UNIT0 stayed within 1 ms of the GPTimer; canary intact. The 250 ms poll can't tell a stall from a clear of low bits. |
+| CN-03 | 2026-11-13, boot #26, 191.2 h | UNIT0 | 11,453.2 min (-687,194.7 s, 7.95 d) | Cleared bits {43, 41}. Group [36..51] went 0x00a0 -> 0x0000, not the canary's 0x5a5a; LOAD0 still holds the canary, so again a clear, not a load. Group [26..35] (0x105) untouched. UNIT1 unaffected (still only CN-02's ~36 ms behind the GPTimer). Happened at the start of an I2C idle gap (idx 0). |
 
-That's **1 UNIT0 event in 156.5 h**. At XIAO-G's production rate (~21 h) about 7 were expected, and seeing 1 or
+As of 2026-11-10 that was **1 UNIT0 event in 156.5 h**. At XIAO-G's production rate (~21 h) about 7 were expected, and seeing 1 or
 fewer has a probability of roughly 0.5%. Possible contributors include the instrumentation (the canary in the
 load registers, and the witness's 250 ms critical-section sample) and run-to-run variation. Running the same build
 on XIAO-T would separate the instrumentation from the board.
 
-As of 2026-11-13 the run is at 183 h and nothing has happened since CN-02. A board that can stay clean that long
+On 2026-11-13 the run reached 183 h with nothing since CN-02; CN-03 followed at 191 h. A board that can stay clean that long
 can't provide a negative result, so a clean window on XIAO-G (for example after an A/B change) isn't evidence.
 Only events from it count. A/B tests need a board that fails reliably.
