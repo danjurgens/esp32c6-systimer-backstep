@@ -107,3 +107,8 @@ on XIAO-T would separate the instrumentation from the board.
 On 2026-11-13 the run reached 183 h with nothing since CN-02; CN-03 followed at 191 h. A board that can stay clean that long
 can't provide a negative result, so a clean window on XIAO-G (for example after an A/B change) isn't evidence.
 Only events from it count. A/B tests need a board that fails reliably.
+
+**Run closed 2026-11-15.** XIAO-G was unplugged after 231.0 h on boot #26, **265.6 h** monitored in all. Totals:
+3 UNIT0 events (CN-01, CN-03, CN-04) and 1 UNIT1 event (CN-02). Every UNIT0 event zeroed a single group, [26..35]
+or [36..51], and never loaded the canary, so the load registers aren't the mechanism. The testbed is retired.
+Others on #19036 have boards that fail within minutes and an active TX-power A/B test.
